@@ -1,0 +1,56 @@
+2026-08-02 19:51:33 DEPRECATED OPTION: --cipher set to 'AES-256-CBC' but missing in --data-ciphers (AES-256-GCM:AES-128-GCM:CHACHA20-POLY1305). OpenVPN ignores --cipher for cipher negotiations. 
+2026-08-02 19:51:33 Note: '--allow-compression' is not set to 'no', disabling data channel offload.
+2026-08-02 19:51:33 OpenVPN 2.6.19 x86_64-pc-linux-gnu [SSL (OpenSSL)] [LZO] [LZ4] [EPOLL] [PKCS11] [MH/PKTINFO] [AEAD] [DCO]
+2026-08-02 19:51:33 library versions: OpenSSL 3.0.13 30 Jan 2024, LZO 2.10
+2026-08-02 19:51:33 DCO version: N/A
+2026-08-02 19:51:33 WARNING: --ping should normally be used with --ping-restart or --ping-exit
+2026-08-02 19:51:33 NOTE: the current --script-security setting may allow this configuration to call user-defined scripts
+2026-08-02 19:51:33 NOTE: --fast-io is disabled since we are not using UDP
+2026-08-02 19:51:33 TCP/UDP: Preserving recently used remote address: [AF_INET]94.156.149.196:1233
+2026-08-02 19:51:33 Socket Buffers: R=[131072->131072] S=[16384->16384]
+2026-08-02 19:51:33 Attempting to establish TCP connection with [AF_INET]94.156.149.196:1233
+2026-08-02 19:51:33 TCP connection established with [AF_INET]94.156.149.196:1233
+2026-08-02 19:51:33 TCPv4_CLIENT link local: (not bound)
+2026-08-02 19:51:33 TCPv4_CLIENT link remote: [AF_INET]94.156.149.196:1233
+2026-08-02 19:51:33 TLS: Initial packet from [AF_INET]94.156.149.196:1233, sid=17a000f7 b0b4482d
+2026-08-02 19:51:33 WARNING: this configuration may cache passwords in memory -- use the auth-nocache option to prevent this
+2026-08-02 19:51:34 VERIFY OK: depth=2, C=PA, O=NordVPN, CN=NordVPN Root CA
+2026-08-02 19:51:34 VERIFY OK: depth=1, O=NordVPN, CN=NordVPN CA11
+2026-08-02 19:51:34 VERIFY KU OK
+2026-08-02 19:51:34 Validating certificate extended key usage
+2026-08-02 19:51:34 ++ Certificate has EKU (str) TLS Web Server Authentication, expects TLS Web Server Authentication
+2026-08-02 19:51:34 VERIFY EKU OK
+2026-08-02 19:51:34 VERIFY X509NAME OK: CN=us11612.nordvpn.com
+2026-08-02 19:51:34 VERIFY OK: depth=0, CN=us11612.nordvpn.com
+2026-08-02 19:51:34 Control Channel: TLSv1.3, cipher TLSv1.3 TLS_AES_256_GCM_SHA384, peer certificate: 4096 bits RSA, signature: RSA-SHA512, peer temporary key: 253 bits X25519
+2026-08-02 19:51:34 [us11612.nordvpn.com] Peer Connection Initiated with [AF_INET]94.156.149.196:1233
+2026-08-02 19:51:34 TLS: move_session: dest=TM_ACTIVE src=TM_INITIAL reinit_src=1
+2026-08-02 19:51:34 TLS: tls_multi_process: initial untrusted session promoted to trusted
+2026-08-02 19:51:35 SENT CONTROL [us11612.nordvpn.com]: 'PUSH_REQUEST' (status=1)
+2026-08-02 19:51:35 PUSH: Received control message: 'PUSH_REPLY,redirect-gateway def1,dhcp-option DNS 103.86.96.100,dhcp-option DNS 103.86.99.100,explicit-exit-notify,comp-lzo no,route-gateway 10.100.0.1,topology subnet,ping 60,ping-restart 180,ifconfig 10.100.0.2 255.255.240.0,peer-id 0,cipher AES-256-GCM'
+2026-08-02 19:51:35 OPTIONS IMPORT: --explicit-exit-notify can only be used with --proto udp
+2026-08-02 19:51:35 OPTIONS IMPORT: --ifconfig/up options modified
+2026-08-02 19:51:35 OPTIONS IMPORT: route options modified
+2026-08-02 19:51:35 OPTIONS IMPORT: route-related options modified
+2026-08-02 19:51:35 OPTIONS IMPORT: --ip-win32 and/or --dhcp-option options modified
+2026-08-02 19:51:35 net_route_v4_best_gw query: dst 0.0.0.0
+2026-08-02 19:51:35 net_route_v4_best_gw result: via 10.200.1.1 dev veth-vpn
+2026-08-02 19:51:35 ROUTE_GATEWAY 10.200.1.1/255.255.255.0 IFACE=veth-vpn HWADDR=76:91:ed:b7:f1:8a
+2026-08-02 19:51:35 TUN/TAP device tun0 opened
+2026-08-02 19:51:35 net_iface_mtu_set: mtu 1500 for tun0
+2026-08-02 19:51:35 net_iface_up: set tun0 up
+2026-08-02 19:51:35 net_addr_v4_add: 10.100.0.2/20 dev tun0
+2026-08-02 19:51:35 /usr/local/bin/vpn-killswitch tun0 1500 0 10.100.0.2 255.255.240.0 init
+2026-08-02 19:51:36 net_route_v4_add: 94.156.149.196/32 via 10.200.1.1 dev [NULL] table 0 metric -1
+2026-08-02 19:51:36 net_route_v4_add: 0.0.0.0/1 via 10.100.0.1 dev [NULL] table 0 metric -1
+2026-08-02 19:51:36 net_route_v4_add: 128.0.0.0/1 via 10.100.0.1 dev [NULL] table 0 metric -1
+2026-08-02 19:51:36 Initialization Sequence Completed
+2026-08-02 19:51:36 Data Channel: cipher 'AES-256-GCM', peer-id: 0, compression: 'stub'
+2026-08-02 19:51:36 Timers: ping 60, ping-restart 180
+2026-08-02 19:53:58 event_wait : Interrupted system call (fd=-1,code=4)
+2026-08-02 19:53:58 net_route_v4_del: 94.156.149.196/32 via 10.200.1.1 dev [NULL] table 0 metric -1
+2026-08-02 19:53:58 net_route_v4_del: 0.0.0.0/1 via 10.100.0.1 dev [NULL] table 0 metric -1
+2026-08-02 19:53:58 net_route_v4_del: 128.0.0.0/1 via 10.100.0.1 dev [NULL] table 0 metric -1
+2026-08-02 19:53:58 Closing TUN/TAP interface
+2026-08-02 19:53:58 net_addr_v4_del: 10.100.0.2 dev tun0
+2026-08-02 19:53:58 SIGTERM[hard,] received, process exiting

@@ -1,0 +1,35 @@
+#!/bin/bash
+# Idempotent: network namespace + veth pair + NAT/forwarding on the host.
+set -e
+
+NS=vpn
+HOST_IF=enp0s31f6
+
+ip netns add $NS 2>/dev/null || true
+
+if ! ip link show veth-host >/dev/null 2>&1; then
+    ip link add veth-host type veth peer name veth-vpn
+    ip link set veth-vpn netns $NS
+fi
+
+ip addr add 10.200.1.1/24 dev veth-host 2>/dev/null || true
+
+ip link set veth-host up
+
+ip netns exec $NS ip addr add 10.200.1.2/24 dev veth-vpn 2>/dev/null || true
+
+ip netns exec $NS ip link set lo up
+ip netns exec $NS ip link set veth-vpn up
+
+ip netns exec $NS ip route add default via 10.200.1.1 2>/dev/null || true
+
+sysctl -w net.ipv4.ip_forward=1 >/dev/null
+
+iptables -t nat -C POSTROUTING -s 10.200.1.0/24 -o $HOST_IF -j MASQUERADE 2>/dev/null || \
+iptables -t nat -A POSTROUTING -s 10.200.1.0/24 -o $HOST_IF -j MASQUERADE
+
+iptables -C FORWARD -i $HOST_IF -o veth-host -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || \
+iptables -A FORWARD -i $HOST_IF -o veth-host -m state --state RELATED,ESTABLISHED -j ACCEPT
+
+iptables -C FORWARD -i veth-host -o $HOST_IF -j ACCEPT 2>/dev/null || \
+iptables -A FORWARD -i veth-host -o $HOST_IF -j ACCEPT

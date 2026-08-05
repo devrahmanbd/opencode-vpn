@@ -1,0 +1,4 @@
+#!/bin/bash
+# Launch OpenCode inside the vpn namespace. Everything it does goes over
+# the VPN; the SSH session and the rest of the host are unaffected.
+exec sudo ip netns exec vpn /root/.opencode/bin/opencode "$@"

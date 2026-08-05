@@ -1,0 +1,26 @@
+#!/bin/bash
+# Kill switch, runs INSIDE the vpn namespace (via --up, or manually with
+# `ip netns exec vpn /usr/local/bin/vpn-killswitch`).
+# Allows only: loopback, the VPN tunnel (tun0), the OpenVPN control channel
+# to the NordVPN server, and the host side of the veth (10.200.1.1, harmless
+# diagnostics). Everything else is dropped -> no fallback to host NAT if the
+# tunnel dies.
+set -e
+
+VPN_SERVER=94.156.149.196
+VPN_PORT=443
+IPT=/usr/sbin/iptables
+
+$IPT -F INPUT
+$IPT -F OUTPUT
+$IPT -P INPUT DROP
+$IPT -A INPUT -i lo -j ACCEPT
+$IPT -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+# OpenHands controller (docker host, 10.200.1.1) -> edge OpenResty (10.200.1.2:443)
+$IPT -A INPUT -s 10.200.1.0/24 -p tcp --dport 443 -j ACCEPT
+
+$IPT -P OUTPUT DROP
+$IPT -A OUTPUT -o lo -j ACCEPT
+$IPT -A OUTPUT -o tun0 -j ACCEPT
+$IPT -A OUTPUT -d $VPN_SERVER -p tcp --dport 1231:1234 -j ACCEPT
+$IPT -A OUTPUT -d 10.200.1.1 -j ACCEPT

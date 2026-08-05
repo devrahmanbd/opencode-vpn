@@ -1,0 +1,12 @@
+#!/bin/bash
+# Create the namespace, then run OpenVPN inside it (foreground).
+# Kill switch is applied automatically via --up once tun0 is up.
+set -e
+
+vpn-create
+
+exec ip netns exec vpn openvpn \
+    --config /etc/openvpn/client/client-tcp.ovpn \
+    --auth-user-pass /etc/openvpn/client/auth.txt \
+    --script-security 2 \
+    --up /usr/local/bin/vpn-killswitch
