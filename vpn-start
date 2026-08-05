@@ -1,10 +1,12 @@
 #!/bin/bash
-# Select a VPN profile and run OpenVPN inside the vpn namespace (foreground).
+# Select a VPN profile and run OpenVPN inside the vpn namespace.
 #
 # Usage:
-#   vpn-start               use saved profile/proto (default vpn1 tcp)
-#   vpn-start --vpn2        switch to profile 2 (tcp preferred, udp fallback)
-#   vpn-start --vpn3 --udp  force udp for profile 3
+#   vpn-start               use saved profile/proto (default vpn1 tcp), foreground
+#   vpn-start --vpn2        switch to profile 2 (tcp preferred, udp fallback), foreground
+#   vpn-start --vpn3 --udp  force udp for profile 3, foreground
+#   vpn-start --daemon      apply saved profile/proto via the systemd service (detached)
+#   vpn-start --vpn2 --daemon  switch to vpn2 and keep it running as a daemon
 #   vpn-start --list        show available profiles
 #
 # Profiles live in /root/vpn-netns/profiles/vpnN/{tcp.ovpn,udp.ovpn}.
@@ -12,6 +14,10 @@
 # no script changes needed. The proto that actually connects is recorded in
 # /etc/openvpn/client/current ("which one works best goes to default"), and
 # the systemd service re-reads it on boot/restart. Kill switch applied via --up.
+#
+# Foreground: openvpn runs as this process -> dies with the terminal.
+# --daemon:   the systemd service (openvpn-netns) runs it detached, with
+#             auto-restart on crash and on boot.
 set -e
 
 PROFILES_DIR=/root/vpn-netns/profiles
@@ -23,17 +29,19 @@ AUTH_RETRIES=8       # relaunch attempts when the server rejects auth (session l
 AUTH_RETRY_DELAY=10  # seconds between auth retries (NordVPN holds old sessions up to ~1 min)
 
 usage() {
-    echo "usage: vpn-start [--vpnN] [--tcp|--udp] | --list" >&2
+    echo "usage: vpn-start [--vpnN] [--tcp|--udp] [--daemon] | --list" >&2
     exit 2
 }
 
 # --- parse args -------------------------------------------------------------
 PROFILE=
 PROTO=
+DAEMON=0
 for arg in "$@"; do
     case "$arg" in
         --vpn[0-9]*) PROFILE="${arg#--}" ;;
         --tcp|--udp) PROTO="${arg#--}" ;;
+        --daemon) DAEMON=1 ;;
         --list)
             for d in "$PROFILES_DIR"/vpn*; do
                 [ -d "$d" ] || continue
@@ -50,6 +58,20 @@ if [ -f "$STATE_FILE" ]; then
 fi
 PROFILE="${PROFILE:-${SAVED_PROFILE:-vpn1}}"
 PROTO="${PROTO:-${SAVED_PROTO:-tcp}}"
+
+# --- daemon mode: delegate to the systemd service ---------------------------
+# Save the choice, then restart the service (it runs `vpn-start` with no
+# args, re-reads the state file, and keeps the tunnel up detached with
+# auto-restart). The service stops any foreground openvpn as part of
+# restart, so no tun0 fight.
+if [ "$DAEMON" = 1 ]; then
+    echo "$PROFILE $PROTO" > "$STATE_FILE"
+    systemctl restart openvpn-netns
+    echo "daemon: $PROFILE ($PROTO) applied via openvpn-netns"
+    echo "  systemctl status openvpn-netns   # check it"
+    echo "  ip netns exec vpn curl -s ifconfig.me   # verify exit IP"
+    exit 0
+fi
 
 # If the service is already running openvpn, stop it so two processes don't
 # fight over tun0. Exception: when systemd itself launches us (parent is

@@ -189,9 +189,16 @@ host curl → 88.99.250.99, SSH OK, opencode-vpn OK.
 ```bash
 sudo vpn-start --vpn2       # switch to profile vpn2, foreground; falls back
                             # tcp→udp; saves the working proto as default
+sudo vpn-start --vpn2 --daemon   # switch AND keep running detached via systemd
 opencode-vpn                # launch OpenCode inside the VPN
-systemctl start openvpn-netns   # background daemon, re-reads saved profile
 ```
+
+- Foreground `vpn-start` dies with the terminal (`nohup ... &` keeps it alive
+  but with no auto-restart). Use `--daemon` for a persistent tunnel:
+  saves the choice to `/etc/openvpn/client/current`, restarts the
+  `openvpn-netns` service (Restart=always, survives crash/reboot).
+- `--daemon` delegates to systemd, so it also works from a script/ssh
+  one-liner without holding the session.
 
 ## Notes / pitfalls
 
