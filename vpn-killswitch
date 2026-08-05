@@ -5,10 +5,17 @@
 # to the NordVPN server, and the host side of the veth (10.200.1.1, harmless
 # diagnostics). Everything else is dropped -> no fallback to host NAT if the
 # tunnel dies.
+#
+# The control-channel destination is written by vpn-start to
+# /etc/openvpn/client/killswitch.env (OpenVPN does not forward custom env
+# vars to --up scripts). Defaults below keep standalone use working (vpn1).
 set -e
 
-VPN_SERVER=94.156.149.196
-VPN_PORT=443
+KILLSWITCH_ENV=/etc/openvpn/client/killswitch.env
+[ -f "$KILLSWITCH_ENV" ] && . "$KILLSWITCH_ENV" || true
+VPN_SERVERS="${VPN_SERVERS:-94.156.149.196}"
+VPN_PORTS="${VPN_PORTS:-1231,1232,1233,1234}"
+VPN_PROTO="${VPN_PROTO:-tcp}"
 IPT=/usr/sbin/iptables
 
 $IPT -F INPUT
@@ -22,5 +29,7 @@ $IPT -A INPUT -s 10.200.1.0/24 -p tcp --dport 443 -j ACCEPT
 $IPT -P OUTPUT DROP
 $IPT -A OUTPUT -o lo -j ACCEPT
 $IPT -A OUTPUT -o tun0 -j ACCEPT
-$IPT -A OUTPUT -d $VPN_SERVER -p tcp --dport 1231:1234 -j ACCEPT
+for srv in $VPN_SERVERS; do
+    $IPT -A OUTPUT -d "$srv" -p "$VPN_PROTO" -m multiport --dports "$VPN_PORTS" -j ACCEPT
+done
 $IPT -A OUTPUT -d 10.200.1.1 -j ACCEPT

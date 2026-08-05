@@ -54,17 +54,19 @@ the file-mount pain of containerizing OpenCode.
 - `resolvconf` package is **not needed** on 24.04 — `/etc/netns/vpn/resolv.conf`
   is honored by glibc directly.
 
-## NordVPN configs (in /root/*.ovpn)
+## NordVPN configs / profiles (in /root/vpn-netns/profiles/)
 
-| Config file | VPN server (remote) | Proto | Port |
+| Profile | Location | tcp config | udp config |
 |---|---|---|---|
-| us11612.nordvpn.com.udp_2.6.ovpn | 94.156.149.196 | udp | 53 |
-| us13889.nordvpn.com.udp_2.6.ovpn | 187.15.91.131 | udp | 53 |
-| us13893.nordvpn.com.udp_2.6.ovpn | 187.15.91.139 | udp | 53 |
+| vpn1 | US us11612 | vpn1.tcp.ovpn (94.156.149.196, ports 1231-1234, tls-auth) | vpn1.udp.ovpn (94.156.149.196:53, tls-crypt) |
+| vpn2 | UK uk6071 | vpn2.tcp.ovpn (187.13.135.170:80, tls-crypt) | vpn2.udp.ovpn (187.13.135.170:53, tls-crypt) |
+| vpn3 | BD bd3/bd4 | vpn3.tcp.ovpn (187.14.255.1:80, tls-crypt) | vpn3.udp.ovpn (187.14.255.3:53, tls-crypt) |
 
+- Old /root/*.ovpn files (us11612/us13889/us13893 UDP) are dead on this
+  network (outbound UDP blocked) — kept only as reference.
 - All use `auth-user-pass` → credentials supplied via `--auth-user-pass
   /etc/openvpn/client/auth.txt`.
-- CA cert + tls-crypt key are **inline** in the .ovpn → no separate
+- CA cert + tls-crypt/tls-auth key are **inline** in the .ovpn → no separate
   ca.crt/client.crt/client.key files needed.
 - No IPv6 in the configs; the namespace is IPv4-only. Fine for our use.
 
@@ -81,15 +83,17 @@ this file.**
 | Path | Purpose |
 |---|---|
 | `/root/vpn-netns/AGENTS.md` | This document (the idea) |
+| `/root/vpn-netns/profiles/` | Per-VPN configs: `vpnN.tcp.ovpn` + `vpnN.udp.ovpn` (see table above) |
 | `/etc/openvpn/client/client.ovpn` | Original NordVPN UDP config (kept as reference, unusable here) |
-| `/etc/openvpn/client/client-tcp.ovpn` | **Active config**: official NordVPN TCP (ports 1231-1234) |
+| `/etc/openvpn/client/client-tcp.ovpn` | Original working TCP config (vpn1, ports 1231-1234) |
 | `/etc/openvpn/client/auth.txt` | Credentials (0600) |
+| `/etc/openvpn/client/current` | State file: `vpnN tcp\|udp` of the last working connection |
 | `/etc/netns/vpn/resolv.conf` | DNS for the vpn namespace (Hetzner resolvers + 1.1.1.1) |
 | `/usr/local/bin/vpn-create` | Idempotent netns + veth + NAT/forwarding setup |
-| `/usr/local/bin/vpn-start` | vpn-create + run openvpn (TCP) inside the ns (foreground) |
+| `/usr/local/bin/vpn-start` | Pick profile, fallback tcp→udp, run openvpn inside the ns (foreground) |
 | `/usr/local/bin/vpn-killswitch` | Kill-switch iptables rules *inside* the ns (auto via --up) |
 | `/usr/local/bin/opencode-vpn` | `sudo ip netns exec vpn opencode "$@"` (absolute path) |
-| `/etc/systemd/system/openvpn-netns.service` | Optional auto-start unit (not enabled) |
+| `/etc/systemd/system/openvpn-netns.service` | Auto-start unit (active); re-reads state file |
 
 ## Execution log
 
@@ -119,21 +123,32 @@ this file.**
    tunnel is up, DNS goes via tun0 anyway. `resolvconf` package is NOT
    needed on Ubuntu 24.04.
 5. **Kill switch** (applied by `--up`): OUTPUT policy DROP; allow lo, tun0,
-   tcp to 94.156.149.196:1231-1234, and 10.200.1.1. It runs inside the
-   namespace (OpenVPN child processes inherit the netns).
-6. **Docker coexistence**: host FORWARD policy is DROP (Docker); our rules
+   the current profile's server (read from `/etc/openvpn/client/killswitch.env`,
+   written by vpn-start — OpenVPN does NOT forward custom env vars to --up
+   scripts), and 10.200.1.1. It runs inside the namespace (OpenVPN child
+   processes inherit the netns). **Leftover rules from a previous connection
+   block the next switch** — vpn-start flushes the namespace firewall before
+   each attempt.
+6. **NordVPN AUTH_FAILED on quick switches**: killing a live tunnel and
+   reconnecting immediately gets `AUTH_FAILED` because the server holds the
+   old session for up to ~1 min. vpn-start detects it and retries the same
+   proto (8 attempts, 10s apart) before falling back to the other proto.
+7. **Docker coexistence**: host FORWARD policy is DROP (Docker); our rules
    are appended and packets fall through Docker/ufw chains to them. Verified
    working — do not `-I` our rules ahead of DOCKER-USER.
-7. **`pkill -f "openvpn"` kills your own shell** if the shell command line
+8. **`pkill -f "openvpn"` kills your own shell** if the shell command line
    contains the pattern — use `pkill -x openvpn` instead.
-8. **opencode-vpn** uses the absolute binary path
+9. **opencode-vpn** uses the absolute binary path
    (`/root/.opencode/bin/opencode`) because sudo's secure_path does not
    include /root/.opencode/bin.
 
-## Current status (2026-08-02)
+## Current status (2026-08-05)
 
 - Tunnel: UP via systemd (`openvpn-netns`), auto-starts on boot,
   `Restart=always`.
+- Multi-profile switching: `vpn-start --vpn1|--vpn2|--vpn3`; tcp→udp fallback;
+  the proto that connects is saved to `/etc/openvpn/client/current` and
+  re-read by the service on boot/restart.
 - Namespace exit IP: 94.156.149.x (NordVPN US), host exit IP: 88.99.250.99.
 - **Why**: LLM providers see the egress IP of OpenCode's API connections;
   the Hetzner datacenter IP can trigger trial restrictions. The VPN exit IP
@@ -150,14 +165,20 @@ ip netns exec vpn ip -brief addr show tun0      # tun0 with 10.100.0.2/20
 ip netns exec vpn ip route get 1.1.1.1          # → via 10.100.0.1 dev tun0
 
 # 2. isolation (the money test)
-ip netns exec vpn curl -s ifconfig.me            # → NordVPN exit IP (94.156.149.200)
+ip netns exec vpn curl -s ifconfig.me            # → NordVPN exit IP
 curl -4 -s ifconfig.me                           # → 88.99.250.99 (host)
 
-# 3. SSH unaffected
+# 3. profile switch
+vpn-start --list                                # available profiles
+vpn-start --vpn2                                # switch to UK, foreground
+ip netns exec vpn curl -s ifconfig.me           # → UK exit IP
+cat /etc/openvpn/client/current                 # e.g. "vpn2 tcp"
+
+# 4. SSH unaffected
 ss -tlnp | grep :22                              # still listening on host
 
-# 4. kill switch (present automatically after --up)
-ip netns exec vpn iptables -L OUTPUT -n -v       # policy DROP, only lo/tun0/1231-1234/10.200.1.1
+# 5. kill switch (present automatically after --up)
+ip netns exec vpn iptables -L OUTPUT -n -v       # policy DROP, only lo/tun0/<server>/10.200.1.1
 ```
 
 Current verified state (2026-08-02): ns curl → 94.156.149.200,
@@ -166,9 +187,10 @@ host curl → 88.99.250.99, SSH OK, opencode-vpn OK.
 ## Operate
 
 ```bash
-sudo vpn-start              # foreground, wait for "Initialization Sequence Completed"
-                            # kill switch applied automatically via --up
+sudo vpn-start --vpn2       # switch to profile vpn2, foreground; falls back
+                            # tcp→udp; saves the working proto as default
 opencode-vpn                # launch OpenCode inside the VPN
+systemctl start openvpn-netns   # background daemon, re-reads saved profile
 ```
 
 ## Notes / pitfalls

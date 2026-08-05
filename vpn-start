@@ -1,12 +1,144 @@
 #!/bin/bash
-# Create the namespace, then run OpenVPN inside it (foreground).
-# Kill switch is applied automatically via --up once tun0 is up.
+# Select a VPN profile and run OpenVPN inside the vpn namespace (foreground).
+#
+# Usage:
+#   vpn-start               use saved profile/proto (default vpn1 tcp)
+#   vpn-start --vpn2        switch to profile 2 (tcp preferred, udp fallback)
+#   vpn-start --vpn3 --udp  force udp for profile 3
+#   vpn-start --list        show available profiles
+#
+# Profiles live in /root/vpn-netns/profiles/vpnN/{tcp.ovpn,udp.ovpn}.
+# To add/replace a VPN, drop new config files into the profile's folder —
+# no script changes needed. The proto that actually connects is recorded in
+# /etc/openvpn/client/current ("which one works best goes to default"), and
+# the systemd service re-reads it on boot/restart. Kill switch applied via --up.
 set -e
+
+PROFILES_DIR=/root/vpn-netns/profiles
+STATE_FILE=/etc/openvpn/client/current
+KILLSWITCH_ENV=/etc/openvpn/client/killswitch.env
+AUTH_FILE=/etc/openvpn/client/auth.txt
+CONNECT_TIMEOUT=30   # seconds to wait for "Initialization Sequence Completed"
+AUTH_RETRIES=8       # relaunch attempts when the server rejects auth (session lingering)
+AUTH_RETRY_DELAY=10  # seconds between auth retries (NordVPN holds old sessions up to ~1 min)
+
+usage() {
+    echo "usage: vpn-start [--vpnN] [--tcp|--udp] | --list" >&2
+    exit 2
+}
+
+# --- parse args -------------------------------------------------------------
+PROFILE=
+PROTO=
+for arg in "$@"; do
+    case "$arg" in
+        --vpn[0-9]*) PROFILE="${arg#--}" ;;
+        --tcp|--udp) PROTO="${arg#--}" ;;
+        --list)
+            for d in "$PROFILES_DIR"/vpn*; do
+                [ -d "$d" ] || continue
+                echo "${d##*/}"
+            done
+            exit 0 ;;
+        *) usage ;;
+    esac
+done
+
+# --- resolve profile/proto from state or defaults --------------------------
+if [ -f "$STATE_FILE" ]; then
+    read -r SAVED_PROFILE SAVED_PROTO < "$STATE_FILE" || true
+fi
+PROFILE="${PROFILE:-${SAVED_PROFILE:-vpn1}}"
+PROTO="${PROTO:-${SAVED_PROTO:-tcp}}"
+
+# If the service is already running openvpn, stop it so two processes don't
+# fight over tun0. Exception: when systemd itself launches us (parent is
+# PID 1), the service is "active" because of us — never stop ourselves.
+if [ "$PPID" -ne 1 ] && systemctl is-active --quiet openvpn-netns 2>/dev/null; then
+    systemctl stop openvpn-netns
+fi
 
 vpn-create
 
-exec ip netns exec vpn openvpn \
-    --config /etc/openvpn/client/client-tcp.ovpn \
-    --auth-user-pass /etc/openvpn/client/auth.txt \
-    --script-security 2 \
-    --up /usr/local/bin/vpn-killswitch
+# --- one connect attempt for a given proto -----------------------------------
+# Runs openvpn in background, polls the log for the tunnel-up marker, and on
+# success keeps the process as the foreground (wait). On failure kills it.
+# AUTH_FAILED right after a switch is transient (NordVPN holds the previous
+# session for a few seconds) -> kill, settle, and relaunch the same proto.
+attempt() {
+    local proto="$1"
+    local cfg="$PROFILES_DIR/$PROFILE/$proto.ovpn"
+    [ -f "$cfg" ] || return 1
+
+    local pid log
+    log="/tmp/vpn-$PROFILE-$proto.log"
+
+    # Flush any leftover kill-switch rules from a previous connection, so the
+    # new control channel can reach its server. The strict rules are
+    # re-applied by vpn-killswitch via --up once tun0 is up.
+    ip netns exec vpn iptables -P INPUT ACCEPT 2>/dev/null || true
+    ip netns exec vpn iptables -P OUTPUT ACCEPT 2>/dev/null || true
+    ip netns exec vpn iptables -F 2>/dev/null || true
+
+    # control-channel info for the kill switch. OpenVPN does NOT forward
+    # custom env vars to --up scripts, so write them to a state file that
+    # vpn-killswitch sources instead.
+    {
+        echo "VPN_SERVERS='$(awk '/^remote /{print $2}' "$cfg" | paste -sd' ' -)'"
+        echo "VPN_PORTS='$(awk '/^remote /{print $3}' "$cfg" | paste -sd, -)'"
+        echo "VPN_PROTO='$(awk '/^proto /{print $2}' "$cfg")'"
+    } > "$KILLSWITCH_ENV"
+
+    for retry in $(seq 1 "$AUTH_RETRIES"); do
+        rm -f "$log"
+        ip netns exec vpn openvpn \
+            --config "$cfg" \
+            --auth-user-pass "$AUTH_FILE" \
+            --script-security 2 \
+            --connect-retry-max 1 \
+            --up /usr/local/bin/vpn-killswitch > "$log" 2>&1 &
+        pid=$!
+
+        for _ in $(seq 1 "$CONNECT_TIMEOUT"); do
+            if ! kill -0 "$pid" 2>/dev/null; then
+                break                    # process exited -> connection failed
+            fi
+            if grep -q "Initialization Sequence Completed" "$log" 2>/dev/null; then
+                echo "$PROFILE $proto" > "$STATE_FILE"
+                echo "connected: $PROFILE ($proto) -> saved as default"
+                wait "$pid"
+                return $?
+            fi
+            sleep 1
+        done
+
+        kill "$pid" 2>/dev/null || true
+        wait "$pid" 2>/dev/null || true
+
+        if grep -q "AUTH_FAILED" "$log" 2>/dev/null; then
+            echo "auth rejected (old session lingering), retry $retry/$AUTH_RETRIES..." >&2
+            pkill -x openvpn 2>/dev/null || true
+            sleep "$AUTH_RETRY_DELAY"
+            continue
+        fi
+        break
+    done
+
+    pkill -x openvpn 2>/dev/null || true   # no orphaned tunnel in the netns
+    echo "failed: $PROFILE ($proto)" >&2
+    tail -5 "$log" >&2 || true
+    return 1
+}
+
+# --- try preferred proto, fall back to the other ----------------------------
+if attempt "$PROTO"; then
+    exit 0
+fi
+OTHER=tcp
+[ "$PROTO" = "tcp" ] && OTHER=udp
+if attempt "$OTHER"; then
+    exit 0
+fi
+
+echo "ERROR: both tcp and udp failed for $PROFILE" >&2
+exit 1
