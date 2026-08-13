@@ -26,7 +26,9 @@ KILLSWITCH_ENV=/etc/openvpn/client/killswitch.env
 AUTH_FILE=/etc/openvpn/client/auth.txt
 CONNECT_TIMEOUT=30   # seconds to wait for "Initialization Sequence Completed"
 AUTH_RETRIES=8       # relaunch attempts when the server rejects auth (session lingering)
-AUTH_RETRY_DELAY=10  # seconds between auth retries (NordVPN holds old sessions up to ~1 min)
+# Each rejected attempt itself creates a session that NordVPN holds for ~1 min,
+# so retrying faster than that NEVER works (self-sustaining AUTH_FAILED loop).
+AUTH_RETRY_DELAY=60  # seconds between auth retries; must outlive the ~1 min hold
 
 usage() {
     echo "usage: vpn-start [--vpnN] [--tcp|--udp] [--daemon] | --list" >&2
