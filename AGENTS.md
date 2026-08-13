@@ -58,10 +58,14 @@ the file-mount pain of containerizing OpenCode.
 
 | Profile | Location | tcp config | udp config |
 |---|---|---|---|
-| vpn1 | US us11612 | vpn1.tcp.ovpn (94.156.149.196, ports 1231-1234, tls-auth) | vpn1.udp.ovpn (94.156.149.196:53, tls-crypt) |
-| vpn2 | UK uk6071 | vpn2.tcp.ovpn (187.13.135.170:80, tls-crypt) | vpn2.udp.ovpn (187.13.135.170:53, tls-crypt) |
-| vpn3 | BD bd3/bd4 | vpn3.tcp.ovpn (187.14.255.1:80, tls-crypt) | vpn3.udp.ovpn (187.14.255.3:53, tls-crypt) |
+| vpn1 | US us13883 | vpn1/tcp.ovpn (187.15.91.5:80, tls-crypt) | vpn1/udp.ovpn (187.15.91.5:53, tls-crypt) |
+| vpn2 | UK uk2613 | vpn2/tcp.ovpn (194.35.235.170:80, tls-crypt) | vpn2/udp.ovpn (194.35.235.170:53, tls-crypt) |
+| vpn3 | BD bd3 | vpn3/tcp.ovpn (187.14.255.1:80, tls-crypt) | vpn3/udp.ovpn (187.14.255.1:53, tls-crypt) |
 
+- 2026-08-12: profiles replaced with NordVPN 2.6-generation configs
+  (tls-crypt inline, verify-x509-name) — `vpn-start` auto-parses `remote`
+  for the kill switch, no script changes needed. Previous configs (us11612
+  tls-auth, uk6071/bd4) backed up in `/root/vpn-netns/profiles/backup-2026-08-12/`.
 - Old /root/*.ovpn files (us11612/us13889/us13893 UDP) are dead on this
   network (outbound UDP blocked) — kept only as reference.
 - All use `auth-user-pass` → credentials supplied via `--auth-user-pass
@@ -100,6 +104,15 @@ this file.**
 - 2026-08-02: folder + this doc created; openvpn installed; config copied;
   scripts written; namespace started; tunnel verified
   (namespace curl → VPN exit IP, host curl → 88.99.250.99).
+- 2026-08-03..05: multi-profile switching (vpn1/vpn2/vpn3), tcp→udp fallback,
+  `--daemon` + systemd unit, exit-IP checks for all profiles, 2.6-config
+  switch prep (NordVPN config deprecations), unused-service cleanup planning
+  removed from scope (user: no dup scripts).
+- 2026-08-12..13: profiles swapped to 2.6-generation configs
+  (us13883/uk2613/bd3; old ones in backup-2026-08-12/); root-caused
+  self-sustaining AUTH_FAILED loop → AUTH_RETRY_DELAY 10→60s; temporary
+  opencode-bypass wrapper created while auth settled; all three profiles
+  re-verified over TCP, default vpn1.
 - See below for the current verification output when it exists.
 
 ## Findings during bring-up (2026-08-02) — READ BEFORE CHANGING THINGS
@@ -142,14 +155,29 @@ this file.**
    (`/root/.opencode/bin/opencode`) because sudo's secure_path does not
    include /root/.opencode/bin.
 
-## Current status (2026-08-05)
+## Current status (2026-08-13)
 
 - Tunnel: UP via systemd (`openvpn-netns`), auto-starts on boot,
   `Restart=always`.
+- ALL THREE profiles verified working with the 2.6 configs (2026-08-13):
+  vpn1 → 187.15.91.x (US), vpn2 → 194.35.235.x (UK), vpn3 → 187.14.255.x (BD);
+  all connect over TCP within seconds. Default = vpn1.
 - Multi-profile switching: `vpn-start --vpn1|--vpn2|--vpn3`; tcp→udp fallback;
   the proto that connects is saved to `/etc/openvpn/client/current` and
   re-read by the service on boot/restart.
-- Namespace exit IP: 94.156.149.x (NordVPN US), host exit IP: 88.99.250.99.
+- Namespace exit IP: 187.15.91.x (NordVPN US), host exit IP: 88.99.250.99.
+- **AUTH_RETRY_DELAY=60** (was 10): each rejected attempt itself creates a
+  new session NordVPN holds ~1 min, so fast retries NEVER work — the loop
+  keeps failing. 60s lets the old session expire first.
+- **Restart storm lesson**: rapid-fire `vpn-start --vpnN --daemon` +
+  `systemctl restart` from parallel SSH commands, plus a foreground vpn-start
+  left orphaned by an aborted terminal (triggering its PPID guard that stops
+  the service), caused repeated restarts with state-file flips. Harmless to
+  the host, but wait for one attempt to finish before issuing the next.
+- **Temporary proxy bypass**: user-supplied proxy creds live in
+  `/root/vpn-netns/opencode-bypass` (chmod 700; symlinked as
+  `opencode-bypass`) so LLM traffic works while NordVPN auth settles. DELETE
+  once the VPN is the only path.
 - **Why**: LLM providers see the egress IP of OpenCode's API connections;
   the Hetzner datacenter IP can trigger trial restrictions. The VPN exit IP
   avoids that.
