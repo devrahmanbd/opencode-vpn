@@ -37,14 +37,14 @@ ssh "$SERVER" "set -e
   systemctl enable --now openvpn-netns"
 
 echo "== 3/4 remote: deployment state"
-ssh "$SERVER" "
-  echo '--- /usr/local/bin symlinks:'
-  ls -l $BIN/vpn-start $BIN/vpn-create $BIN/vpn-killswitch $BIN/opencode-vpn
-  echo '--- unit identical to repo:'
-  cmp -s /etc/systemd/system/openvpn-netns.service $SRC/openvpn-netns.service && echo OK
-  echo '--- service:'
+ssh "$SERVER" '
+  echo "--- /usr/local/bin symlinks:"
+  ls -l '"$BIN"'/vpn-start '"$BIN"'/vpn-create '"$BIN"'/vpn-killswitch '"$BIN"'/opencode-vpn
+  echo "--- unit identical to repo:"
+  cmp -s /etc/systemd/system/openvpn-netns.service '"$SRC"'/openvpn-netns.service && echo OK
+  echo "--- service:"
   systemctl is-enabled openvpn-netns; systemctl is-active openvpn-netns
-  echo '--- state file: \$(cat /etc/openvpn/client/current 2>/dev/null || echo missing)'"
+  echo "--- state file: $(cat /etc/openvpn/client/current 2>/dev/null || echo missing)"'
 
 echo "== 4/4 remote: health"
 ssh "$SERVER" "
