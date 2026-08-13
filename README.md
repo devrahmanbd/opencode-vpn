@@ -33,14 +33,20 @@ dropping new `.ovpn` files in — no code changes needed.
 
 | Profile | Location | Server (tcp) |
 |---|---|---|
-| `vpn1` | US us11612 | 94.156.149.196:1231-1234 |
-| `vpn2` | UK uk6071 | 187.13.135.170:80 |
+| `vpn1` | US us13883 | 187.15.91.5:80 |
+| `vpn2` | UK uk2613 | 194.35.235.170:80 |
 | `vpn3` | BD bd3 | 187.14.255.1:80 |
 
 Files live in `/root/vpn-netns/profiles/vpnN/{tcp.ovpn,udp.ovpn}`.
 Credentials are in `/etc/openvpn/client/auth.txt` (chmod 600, never commit).
 
-## Install (one-time, on the server)
+## Deploy (one-time, from the repo checkout)
+
+```bash
+./deploy.sh    # sync repo -> server, symlinks, systemd unit, verify
+```
+
+Equivalent manual steps (for reference):
 
 ```bash
 sudo apt install -y openvpn iptables
