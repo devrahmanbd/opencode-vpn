@@ -11,12 +11,54 @@
 #
 # Prereqs: ssh key access to the server, a local `opencode` binary, curl.
 # Optional env overrides: VPN_SERVER, VPN_PROXY_REMOTE, VPN_PROXY_PORT.
+#
+# Wrapper flags (everything else passes through to opencode):
+#   --vpn1 | --vpn2 | --vpn3 | --vpn=vpnN   switch server profile, wait for tunnel
+#   --list                                  list server profiles, then exit
+#   --ip                                    print proxy/tunnel exit IPs, then exit
+#   -h                                      this help (opencode's own --help passes through)
 set -euo pipefail
 
 SERVER="${VPN_SERVER:-root@88.99.250.99}"
 REMOTE="${VPN_PROXY_REMOTE:-10.200.1.2:8888}"
 PORT="${VPN_PROXY_PORT:-8888}"
 PROXY="http://127.0.0.1:$PORT"
+
+usage() {
+    echo "usage: opencode-vpn-macos [--vpn1|--vpn2|--vpn3|--vpn=vpnN] [--ip] [--list] [-h] [opencode args...]"
+}
+
+VPN_SWITCH=""
+SHOW_IP=0
+ARGS=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --vpn[0-9]*) VPN_SWITCH="${1#--}"; shift ;;
+        --vpn=*) VPN_SWITCH="${1#--vpn=}"; shift ;;
+        --list) ssh -o ConnectTimeout=10 "$SERVER" vpn-start --list; exit "$?" ;;
+        --ip) SHOW_IP=1; shift ;;
+        -h) usage; exit 0 ;;
+        --) shift; while [ $# -gt 0 ]; do ARGS+=("$1"); shift; done; break ;;
+        *) ARGS+=("$1"); shift ;;
+    esac
+done
+case "$VPN_SWITCH" in
+    ""|vpn[0-9]*) ;;
+    *) echo "ERROR: bad --vpn value '$VPN_SWITCH' (want vpnN)" >&2; exit 2 ;;
+esac
+
+if [ -n "$VPN_SWITCH" ]; then
+    echo "switching server profile to $VPN_SWITCH ..." >&2
+    ssh -o ConnectTimeout=10 "$SERVER" "vpn-start --$VPN_SWITCH --daemon" >&2 \
+        || { echo "ERROR: profile switch command failed" >&2; exit 1; }
+    echo "waiting for tunnel on $VPN_SWITCH (up to ~150s) ..." >&2
+    if ssh -o ConnectTimeout=10 "$SERVER" "for i in \$(seq 1 75); do grep -q '^$VPN_SWITCH ' /etc/openvpn/client/current 2>/dev/null && ip netns exec vpn ip -brief addr show tun0 2>/dev/null | grep -q '^tun0' && exit 0; sleep 2; done; exit 1"; then
+        echo "tunnel up on $VPN_SWITCH" >&2
+    else
+        echo "ERROR: tunnel did not come up on $VPN_SWITCH in ~150s" >&2
+        exit 1
+    fi
+fi
 
 proxy_ip() { curl -s --max-time 8 -x "$PROXY" https://ifconfig.me 2>/dev/null || true; }
 
@@ -50,10 +92,22 @@ if [ "$PROXY_IP" != "$NS_IP" ]; then
 fi
 echo "vpn exit IP: $PROXY_IP" >&2
 
+if [ "$SHOW_IP" = 1 ]; then
+    echo "proxy exit:  $PROXY_IP"
+    echo "tunnel exit: $NS_IP"
+    echo "MATCH: Mac opencode traffic is on the VPN"
+    exit 0
+fi
+
 OPENCODE="$(command -v opencode || true)"
 [ -n "$OPENCODE" ] || OPENCODE="$HOME/.opencode/bin/opencode"
 [ -x "$OPENCODE" ] || { echo "ERROR: opencode binary not found (install it first)" >&2; exit 1; }
 
 export HTTPS_PROXY="$PROXY" HTTP_PROXY="$PROXY" https_proxy="$PROXY" http_proxy="$PROXY"
 export NO_PROXY="localhost,127.0.0.1,::1" no_proxy="localhost,127.0.0.1,::1"
-exec "$OPENCODE" "$@"
+# "$@" on empty args trips `set -u` on bash 3.2, hence the branch.
+if [ "${#ARGS[@]}" -eq 0 ]; then
+    exec "$OPENCODE"
+else
+    exec "$OPENCODE" "${ARGS[@]}"
+fi

@@ -97,7 +97,10 @@ opencode-vpn                  # launch OpenCode inside the VPN (on the server)
 ### macOS client (this Mac)
 
 ```bash
-opencode-vpn-macos          # local opencode, API traffic via the VPN (fail-closed)
+opencode-vpn-macos              # local opencode, API traffic via the VPN (fail-closed)
+opencode-vpn-macos --ip         # just print proxy/tunnel exit IPs, no launch
+opencode-vpn-macos --list       # list server profiles (vpn1 US, vpn2 UK, vpn3 BD)
+opencode-vpn-macos --vpn2       # switch server to UK, wait for tunnel, then launch
 ```
 
 Only opencode's traffic goes through the SSH-forwarded proxy

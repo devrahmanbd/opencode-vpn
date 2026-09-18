@@ -100,7 +100,7 @@ this file.**
 | `/etc/systemd/system/openvpn-netns.service` | Auto-start unit (active); re-reads state file |
 | `/etc/systemd/system/vpn-proxy.service` | tinyproxy inside the ns for macOS clients (BindsTo tunnel) |
 | `/root/vpn-netns/tinyproxy-netns.conf` | Proxy listens 10.200.1.2:8888, Allow veth subnet only |
-| `opencode-vpn-macos` (repo + `~/.local/bin` on Mac) | SSH-forward proxy to local opencode, fail-closed exit-IP check |
+| `opencode-vpn-macos` (repo + `~/.local/bin` on Mac) | SSH-forward proxy to local opencode, fail-closed exit-IP check; flags: `--vpnN` (switch server profile + wait), `--ip` (print exits), `--list` |
 | `setup.sh` / `setup-ubuntu.sh` / `setup-macos.sh` / `lib/common.sh` | Dynamic installer: dispatcher + Ubuntu server + macOS client + shared helpers |
 
 ## Execution log
