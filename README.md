@@ -40,6 +40,24 @@ dropping new `.ovpn` files in — no code changes needed.
 Files live in `/root/vpn-netns/profiles/vpnN/{tcp.ovpn,udp.ovpn}`.
 Credentials are in `/etc/openvpn/client/auth.txt` (chmod 600, never commit).
 
+## Setup (dynamic installer)
+
+One entry point, detects the OS and runs the right installer:
+
+```bash
+./setup.sh              # macOS -> client setup, Ubuntu -> server setup
+./setup.sh --check      # verify-only, changes nothing
+./setup.sh --help       # all flags
+```
+
+- **Ubuntu 22.04/24.04, as root**: installs packages, lays out files, adapts
+  to the real NIC, writes resolv.conf, prompts for VPN creds (`auth.txt`,
+  0600), enables both units, waits for the tunnel, verifies exit IPs +
+  killswitch + proxy. `-y` needs `VPN_AUTH_USER`/`VPN_AUTH_PASS` in env.
+- **macOS 13+**: checks ssh key auth + local opencode, installs
+  `opencode-vpn-macos` to `~/.local/bin`, probes server services, runs an
+  end-to-end proxy test (proxy exit IP == namespace exit IP, fail-closed).
+
 ## Deploy (one-time, from the repo checkout)
 
 ```bash
@@ -73,8 +91,19 @@ vpn-start --vpn2 --daemon     # switch AND keep running detached via systemd
 vpn-start --list              # show available profiles
 vpn-start                     # foreground dies with the terminal
 
-opencode-vpn                  # launch OpenCode inside the VPN
+opencode-vpn                  # launch OpenCode inside the VPN (on the server)
 ```
+
+### macOS client (this Mac)
+
+```bash
+opencode-vpn-macos          # local opencode, API traffic via the VPN (fail-closed)
+```
+
+Only opencode's traffic goes through the SSH-forwarded proxy
+(`127.0.0.1:8888` → `10.200.1.2:8888` in the server netns → tunnel);
+everything else on the Mac uses its normal network. The wrapper refuses to
+run unless the proxy exit IP matches the namespace exit IP.
 
 The proto that actually connects is saved to `/etc/openvpn/client/current`
 (`vpnN tcp|udp`) and re-read by the systemd service on boot/restart.

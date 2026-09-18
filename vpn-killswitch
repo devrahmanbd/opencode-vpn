@@ -25,6 +25,10 @@ $IPT -A INPUT -i lo -j ACCEPT
 $IPT -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
 # OpenHands controller (docker host, 10.200.1.1) -> edge OpenResty (10.200.1.2:443)
 $IPT -A INPUT -s 10.200.1.0/24 -p tcp --dport 443 -j ACCEPT
+# SSH-forwarded tinyproxy (host side 10.200.1.1) -> 10.200.1.2:8888 (macOS clients)
+$IPT -A INPUT -s 10.200.1.0/24 -p tcp --dport 8888 -j ACCEPT
+# tinyproxy forward proxy (10.200.1.2:8888) <- ssh -L clients via veth host
+$IPT -A INPUT -s 10.200.1.0/24 -p tcp --dport 8888 -j ACCEPT
 
 $IPT -P OUTPUT DROP
 $IPT -A OUTPUT -o lo -j ACCEPT

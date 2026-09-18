@@ -98,6 +98,10 @@ this file.**
 | `/usr/local/bin/vpn-killswitch` | Kill-switch iptables rules *inside* the ns (auto via --up) |
 | `/usr/local/bin/opencode-vpn` | `sudo ip netns exec vpn opencode "$@"` (absolute path) |
 | `/etc/systemd/system/openvpn-netns.service` | Auto-start unit (active); re-reads state file |
+| `/etc/systemd/system/vpn-proxy.service` | tinyproxy inside the ns for macOS clients (BindsTo tunnel) |
+| `/root/vpn-netns/tinyproxy-netns.conf` | Proxy listens 10.200.1.2:8888, Allow veth subnet only |
+| `opencode-vpn-macos` (repo + `~/.local/bin` on Mac) | SSH-forward proxy to local opencode, fail-closed exit-IP check |
+| `setup.sh` / `setup-ubuntu.sh` / `setup-macos.sh` / `lib/common.sh` | Dynamic installer: dispatcher + Ubuntu server + macOS client + shared helpers |
 
 ## Execution log
 
@@ -138,7 +142,10 @@ this file.**
 5. **Kill switch** (applied by `--up`): OUTPUT policy DROP; allow lo, tun0,
    the current profile's server (read from `/etc/openvpn/client/killswitch.env`,
    written by vpn-start — OpenVPN does NOT forward custom env vars to --up
-   scripts), and 10.200.1.1. It runs inside the namespace (OpenVPN child
+   scripts), and 10.200.1.1. INPUT policy DROP; allow lo, ESTABLISHED,
+   10.200.1.0/24→tcp/443 (edge OpenResty) and 10.200.1.0/24→tcp/8888
+   (tinyproxy for macOS clients — without this the SSH-forwarded proxy is
+   unreachable). It runs inside the namespace (OpenVPN child
    processes inherit the netns). **Leftover rules from a previous connection
    block the next switch** — vpn-start flushes the namespace firewall before
    each attempt.

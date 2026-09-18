@@ -1,0 +1,16 @@
+[Unit]
+Description=Forward proxy inside the vpn network namespace (for macOS clients)
+After=openvpn-netns.service network.target
+BindsTo=openvpn-netns.service
+
+[Service]
+Type=simple
+# Wait for the veth IP (vpn-create runs at the top of vpn-start, but After=
+# only orders unit start, so poll briefly instead of racing the bind).
+ExecStartPre=/bin/bash -c 'for i in $(seq 1 30); do ip netns exec vpn ip -o addr show veth-vpn | grep -q 10.200.1.2 && exit 0; sleep 1; done; exit 1'
+ExecStart=/usr/bin/ip netns exec vpn /usr/bin/tinyproxy -d -c /root/vpn-netns/tinyproxy-netns.conf
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

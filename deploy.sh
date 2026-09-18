@@ -33,8 +33,11 @@ ssh "$SERVER" "set -e
   ln -sf $SRC/opencode-vpn   $BIN/opencode-vpn
   [ -e $SRC/opencode-bypass ] && ln -sf $SRC/opencode-bypass $BIN/opencode-bypass || true
   cp $SRC/openvpn-netns.service /etc/systemd/system/openvpn-netns.service
+  cp $SRC/vpn-proxy.service /etc/systemd/system/vpn-proxy.service
+  command -v tinyproxy >/dev/null || (apt-get update -qq && apt-get install -y -qq tinyproxy)
   systemctl daemon-reload
-  systemctl enable --now openvpn-netns"
+  systemctl enable --now openvpn-netns
+  systemctl enable --now vpn-proxy"
 
 echo "== 3/4 remote: deployment state"
 ssh "$SERVER" '
@@ -44,6 +47,7 @@ ssh "$SERVER" '
   cmp -s /etc/systemd/system/openvpn-netns.service '"$SRC"'/openvpn-netns.service && echo OK
   echo "--- service:"
   systemctl is-enabled openvpn-netns; systemctl is-active openvpn-netns
+  systemctl is-enabled vpn-proxy; systemctl is-active vpn-proxy
   echo "--- state file: $(cat /etc/openvpn/client/current 2>/dev/null || echo missing)"'
 
 echo "== 4/4 remote: health"
@@ -51,6 +55,7 @@ ssh "$SERVER" "
   echo -n 'ns exit IP: '; ip netns exec vpn curl -s --max-time 12 ifconfig.me; echo
   echo -n 'host exit : '; curl -4 -s --max-time 10 ifconfig.me; echo
   echo -n 'tun0      : '; ip netns exec vpn ip -brief addr show tun0 2>&1 | head -1
-  echo 'killswitch OUTPUT policy:'; ip netns exec vpn iptables -L OUTPUT -n | head -2"
+  echo 'killswitch OUTPUT policy:'; ip netns exec vpn iptables -L OUTPUT -n | head -2
+  echo -n 'proxy exit : '; curl -s --max-time 8 -x http://10.200.1.2:8888 ifconfig.me 2>/dev/null; echo ' (must match ns exit IP)'"
 
 echo "== deploy complete"

@@ -1,0 +1,59 @@
+#!/bin/bash
+# Launch local OpenCode with its API traffic egressing via the Hetzner VPN.
+# macOS (Sequoia/Tahoe) has no network namespaces, so traffic goes through an
+# SSH-forwarded tinyproxy that lives INSIDE the server's vpn netns:
+#
+#   opencode -> 127.0.0.1:8888 -> ssh -L -> 10.200.1.2:8888 (tinyproxy in netns)
+#                                        -> tun0 -> NordVPN -> LLM APIs
+#
+# Everything else on the Mac uses its normal network. Fail-closed: opencode
+# never starts unless the proxy exit IP matches the namespace exit IP.
+#
+# Prereqs: ssh key access to the server, a local `opencode` binary, curl.
+# Optional env overrides: VPN_SERVER, VPN_PROXY_REMOTE, VPN_PROXY_PORT.
+set -euo pipefail
+
+SERVER="${VPN_SERVER:-root@88.99.250.99}"
+REMOTE="${VPN_PROXY_REMOTE:-10.200.1.2:8888}"
+PORT="${VPN_PROXY_PORT:-8888}"
+PROXY="http://127.0.0.1:$PORT"
+
+proxy_ip() { curl -s --max-time 8 -x "$PROXY" https://ifconfig.me 2>/dev/null || true; }
+
+BEFORE_FWD="$(pgrep -f "ssh.*-L 127.0.0.1:$PORT:" 2>/dev/null || true)"
+PROXY_IP="$(proxy_ip)"
+if [ -z "$PROXY_IP" ]; then
+    echo "starting ssh forward 127.0.0.1:$PORT -> $SERVER:$REMOTE ..." >&2
+    ssh -f -N -o BatchMode=yes -o ConnectTimeout=10 -o ExitOnForwardFailure=yes \
+        -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
+        -L "127.0.0.1:$PORT:$REMOTE" "$SERVER"
+    sleep 2
+    PROXY_IP="$(proxy_ip)"
+fi
+if [ -z "$PROXY_IP" ]; then
+    # Don't leave an orphaned forward behind on the failure path.
+    AFTER_FWD="$(pgrep -f "ssh.*-L 127.0.0.1:$PORT:" 2>/dev/null || true)"
+    for pid in $AFTER_FWD; do
+        case " $BEFORE_FWD " in
+            *" $pid "*) ;;
+            *) kill "$pid" 2>/dev/null || true ;;
+        esac
+    done
+    echo "ERROR: proxy unreachable; is vpn-proxy + openvpn-netns active on $SERVER?" >&2
+    exit 1
+fi
+
+NS_IP="$(ssh -o ConnectTimeout=10 "$SERVER" 'ip netns exec vpn curl -s --max-time 10 https://ifconfig.me' 2>/dev/null || true)"
+if [ "$PROXY_IP" != "$NS_IP" ]; then
+    echo "ERROR: proxy exit ($PROXY_IP) != namespace exit ($NS_IP); refusing to run" >&2
+    exit 1
+fi
+echo "vpn exit IP: $PROXY_IP" >&2
+
+OPENCODE="$(command -v opencode || true)"
+[ -n "$OPENCODE" ] || OPENCODE="$HOME/.opencode/bin/opencode"
+[ -x "$OPENCODE" ] || { echo "ERROR: opencode binary not found (install it first)" >&2; exit 1; }
+
+export HTTPS_PROXY="$PROXY" HTTP_PROXY="$PROXY" https_proxy="$PROXY" http_proxy="$PROXY"
+export NO_PROXY="localhost,127.0.0.1,::1" no_proxy="localhost,127.0.0.1,::1"
+exec "$OPENCODE" "$@"
