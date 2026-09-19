@@ -29,7 +29,17 @@ done
 PROFILES="$(vpn-start --list 2>/dev/null | grep -E '^vpn[0-9]+$' || true)"
 [ -n "$PROFILES" ] || { echo "no profiles found" >&2; exit 1; }
 
+FIRST=1
 for p in $PROFILES; do
+    # Settle between attempts: killing a live session makes NordVPN hold it
+    # ~60s, and hammering profiles back-to-back triggers account-wide
+    # AUTH_FAILED storms. Skip the wait before the first attempt.
+    if [ "$FIRST" = 1 ]; then
+        FIRST=0
+    else
+        echo "settling 65s (letting the old session expire)..."
+        sleep 65
+    fi
     echo "=== trying $p ==="
     vpn-start --"$p" --daemon >/dev/null 2>&1 || { echo "--$p daemon failed, next"; continue; }
     # wait for tunnel (state file matches + tun0 present), up to ~150s

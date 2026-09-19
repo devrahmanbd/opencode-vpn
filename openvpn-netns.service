@@ -1,6 +1,7 @@
 [Unit]
 Description=OpenVPN inside network namespace (vpn) for OpenCode
 After=network-online.target
+Wants=vpn-proxy.service
 
 [Service]
 Type=simple
