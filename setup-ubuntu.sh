@@ -256,6 +256,9 @@ if [ "$TUN_UP" = 1 ]; then
     echo "[ok] tunnel is up"
 else
     warn "tunnel not up after 90s (check: systemctl status openvpn-netns)"
+    if [ -x "$SRC/opencode-bypass" ]; then
+        warn "temp fallback present: $SRC/opencode-bypass works without openvpn; use it until the tunnel is back"
+    fi
 fi
 systemctl enable --now vpn-proxy
 echo "[ok] services enabled"

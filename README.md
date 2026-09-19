@@ -36,6 +36,7 @@ dropping new `.ovpn` files in — no code changes needed.
 | `vpn1` | US us13883 | 187.15.91.5:80 |
 | `vpn2` | UK uk2613 | 194.35.235.170:80 |
 | `vpn3` | BD bd3 | 187.14.255.1:80 |
+| `vpn4` | user-added | 187.13.201.183:80 |
 
 Files live in `/root/vpn-netns/profiles/vpnN/{tcp.ovpn,udp.ovpn}`.
 Credentials are in `/etc/openvpn/client/auth.txt` (chmod 600, never commit).
