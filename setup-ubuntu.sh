@@ -151,16 +151,18 @@ echo "[..] 3/11 files"
 [ -f ./vpn-start ] || die "missing ./vpn-start (run from repo checkout)"
 [ -f ./vpn-killswitch ] || die "missing ./vpn-killswitch (run from repo checkout)"
 [ -f ./opencode-vpn ] || die "missing ./opencode-vpn (run from repo checkout)"
+[ -f ./vpn-rotate ] || die "missing ./vpn-rotate (run from repo checkout)"
+[ -f ./vpn-add ] || die "missing ./vpn-add (run from repo checkout)"
 [ -f ./openvpn-netns.service ] || die "missing ./openvpn-netns.service"
 [ -f ./vpn-proxy.service ] || die "missing ./vpn-proxy.service"
 [ -f ./tinyproxy-netns.conf ] || die "missing ./tinyproxy-netns.conf"
 [ -d "./profiles/$PROFILE" ] || die "missing ./profiles/$PROFILE"
 mkdir -p /root/vpn-netns/profiles /etc/openvpn/client /etc/netns/vpn \
     /var/log/tinyproxy /run/tinyproxy
-for f in vpn-create vpn-start vpn-killswitch opencode-vpn; do
+for f in vpn-create vpn-start vpn-killswitch opencode-vpn vpn-rotate vpn-add; do
     cp "./$f" "$SRC/$f"
 done
-chmod +x "$SRC/vpn-create" "$SRC/vpn-start" "$SRC/vpn-killswitch" "$SRC/opencode-vpn"
+chmod +x "$SRC/vpn-create" "$SRC/vpn-start" "$SRC/vpn-killswitch" "$SRC/opencode-vpn" "$SRC/vpn-rotate" "$SRC/vpn-add"
 cp ./openvpn-netns.service ./vpn-proxy.service ./tinyproxy-netns.conf "$SRC/"
 cp -a ./profiles/. "$SRC/profiles/"
 for doc in AGENTS.md README.md; do
@@ -170,6 +172,8 @@ ln -sf "$SRC/vpn-create" "$BIN/vpn-create"
 ln -sf "$SRC/vpn-start" "$BIN/vpn-start"
 ln -sf "$SRC/vpn-killswitch" "$BIN/vpn-killswitch"
 ln -sf "$SRC/opencode-vpn" "$BIN/opencode-vpn"
+ln -sf "$SRC/vpn-rotate" "$BIN/vpn-rotate"
+ln -sf "$SRC/vpn-add" "$BIN/vpn-add"
 echo "[ok] files in place, symlinks linked"
 
 # --- 4. adapt installed vpn-create HOST_IF to detected NIC ------------------

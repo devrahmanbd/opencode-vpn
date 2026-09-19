@@ -1,0 +1,41 @@
+#!/bin/bash
+# vpn-add - install a fresh NordVPN server as a new profile.
+#
+# Usage (as root, files already on the server):
+#   vpn-add <name> <tcp.ovpn> <udp.ovpn>     e.g. vpn-add vpn6 de1569.tcp.ovpn de1569.udp.ovpn
+#
+# Validates the pair (remote/proto/auth-user-pass/inline ca+tls-crypt),
+# installs to /root/vpn-netns/profiles/<name>/{tcp,udp}.ovpn, and shows it
+# in `vpn-start --list`. Then run `vpn-rotate` to try it.
+# Get fresh configs from https://downloads.nordcdn.com/configs/files/ovpn_tcp/
+# and .../ovpn_udp/ -- prefer new/small servers, popular exits burn fast.
+set -euo pipefail
+
+[ $# -eq 3 ] || { echo "usage: vpn-add <name> <tcp.ovpn> <udp.ovpn>" >&2; exit 2; }
+NAME="$1"; TCP="$2"; UDP="$3"
+
+case "$NAME" in
+    vpn[0-9]*) ;;
+    *) echo "name must look like vpnN (got '$NAME')" >&2; exit 2 ;;
+esac
+[ -f "$TCP" ] || { echo "missing: $TCP" >&2; exit 1; }
+[ -f "$UDP" ] || { echo "missing: $UDP" >&2; exit 1; }
+[ -d "/root/vpn-netns/profiles/$NAME" ] && { echo "profile $NAME exists; refusing to overwrite" >&2; exit 1; }
+
+check_one() { # $1=file $2=want-proto
+    grep -q "^proto $2" "$1" || { echo "$1: no 'proto $2'" >&2; return 1; }
+    grep -q "^remote " "$1" || { echo "$1: no 'remote' line" >&2; return 1; }
+    grep -q "^auth-user-pass" "$1" || { echo "$1: no 'auth-user-pass'" >&2; return 1; }
+    grep -q "<ca>" "$1" || echo "WARN: $1 has no inline <ca>" >&2
+    grep -q "<tls-crypt>" "$1" || echo "WARN: $1 has no inline <tls-crypt> (old tls-auth gen?)" >&2
+}
+check_one "$TCP" tcp || exit 1
+check_one "$UDP" udp || exit 1
+
+mkdir -p "/root/vpn-netns/profiles/$NAME"
+cp "$TCP" "/root/vpn-netns/profiles/$NAME/tcp.ovpn"
+cp "$UDP" "/root/vpn-netns/profiles/$NAME/udp.ovpn"
+chmod 600 "/root/vpn-netns/profiles/$NAME/"*.ovpn
+echo "installed $NAME:"
+grep -h "^remote " "/root/vpn-netns/profiles/$NAME/"*.ovpn
+echo "profiles now:"; vpn-start --list
