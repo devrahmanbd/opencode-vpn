@@ -79,6 +79,13 @@ while read -r host ip cc; do
         && curl -s --max-time 25 -o "$tmp/udp.ovpn" \
             "https://downloads.nordcdn.com/configs/files/ovpn_udp/servers/$host.udp.ovpn" \
         && grep -q "^remote " "$tmp/tcp.ovpn" && grep -q "^remote " "$tmp/udp.ovpn"; then
+        # Reject legacy-generation configs (tls-auth/key-direction): some CDN
+        # hostnames still map to the old format, which our scripts don't target.
+        if ! grep -q "<tls-crypt>" "$tmp/tcp.ovpn" || ! grep -q "<tls-crypt>" "$tmp/udp.ovpn"; then
+            echo "skip $host: legacy tls-auth config, not 2.6-gen" >&2
+            rm -rf "$tmp"
+            continue
+        fi
         if vpn-add "$name" "$tmp/tcp.ovpn" "$tmp/udp.ovpn"; then
             echo "fresh: $name = $host ($ip $cc)"
             NEXT=$((NEXT + 1))
