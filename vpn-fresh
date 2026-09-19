@@ -1,0 +1,91 @@
+#!/bin/bash
+# vpn-fresh - fetch fresh NordVPN servers and install them as new profiles.
+#
+# The free-model quota lives per exit-IP and burns fast on popular exits.
+# This automates the "give me more servers" step: pick low-load online
+# OpenVPN servers from NordVPN's public API, download their 2.6-gen tcp+udp
+# configs, and install them via vpn-add. Then run `vpn-rotate` to hunt.
+#
+# Run AS ROOT on the server:
+#   vpn-fresh [--count N] [--country DE,US,NL] [--max-load L]
+# Defaults: count 3, any country, max load 30.
+set -euo pipefail
+
+COUNT=3
+COUNTRIES=""
+MAXLOAD=30
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --count) COUNT="${2:?--count needs a number}"; shift 2 ;;
+        --country) COUNTRIES="${2:?--country needs codes}"; shift 2 ;;
+        --max-load) MAXLOAD="${2:?--max-load needs a number}"; shift 2 ;;
+        -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
+        *) echo "unknown flag: $1" >&2; exit 2 ;;
+    esac
+done
+
+need() { command -v "$1" >/dev/null 2>&1 || { echo "missing: $1" >&2; exit 1; }; }
+need curl
+need python3
+
+export COUNT COUNTRIES MAXLOAD
+PICKS="$(curl -s --max-time 20 \
+  "https://api.nordvpn.com/v1/servers?limit=100" | python3 -c "
+import json,sys,os
+want = set(os.environ.get('COUNTRIES','').upper().replace(' ','').split(',')) - {''}
+maxload = int(os.environ.get('MAXLOAD','30'))
+try:
+    servers = json.load(sys.stdin)
+except Exception as e:
+    sys.exit('API parse failed: %s' % e)
+out = []
+for s in servers:
+    if s.get('status') != 'online': continue
+    techs = [t.get('identifier','') for t in s.get('technologies',[])]
+    if not any('openvpn' in t for t in techs): continue
+    if (s.get('load') or 100) > maxload: continue
+    code = (((s.get('locations') or [{}])[0].get('country') or {}).get('code')) or ''
+    if want and code.upper() not in want: continue
+    out.append((s['load'], s['hostname'], s['station'], code))
+out.sort()
+for _,h,ip,cc in out[:int(os.environ.get('COUNT','3'))]:
+    print('%s %s %s' % (h, ip, cc))
+")"
+[ -n "$PICKS" ] || { echo "no servers matched (try --max-load higher)" >&2; exit 1; }
+
+# next free profile number
+NEXT=1
+for d in /root/vpn-netns/profiles/vpn*/; do
+    n="${d%/}"; n="${n##*vpn}"
+    case "$n" in
+        ''|*[!0-9]*) continue ;;
+    esac
+    [ "$n" -ge "$NEXT" ] && NEXT=$((n + 1))
+done
+
+# existing server IPs + hostnames (skip duplicates)
+KNOWN="$(grep -h "^remote \|verify-x509-name" /root/vpn-netns/profiles/vpn*/*.ovpn 2>/dev/null || true)"
+
+while read -r host ip cc; do
+    [ -n "$host" ] || continue
+    if echo "$KNOWN" | grep -q "$ip\|$host"; then
+        echo "skip $host ($ip $cc): already installed"; continue
+    fi
+    name="vpn$NEXT"
+    tmp="$(mktemp -d)"
+    if curl -s --max-time 25 -o "$tmp/tcp.ovpn" \
+            "https://downloads.nordcdn.com/configs/files/ovpn_tcp/servers/$host.tcp.ovpn" \
+        && curl -s --max-time 25 -o "$tmp/udp.ovpn" \
+            "https://downloads.nordcdn.com/configs/files/ovpn_udp/servers/$host.udp.ovpn" \
+        && grep -q "^remote " "$tmp/tcp.ovpn" && grep -q "^remote " "$tmp/udp.ovpn"; then
+        if vpn-add "$name" "$tmp/tcp.ovpn" "$tmp/udp.ovpn"; then
+            echo "fresh: $name = $host ($ip $cc)"
+            NEXT=$((NEXT + 1))
+        fi
+    else
+        echo "download failed for $host, skipped" >&2
+    fi
+    rm -rf "$tmp"
+done <<< "$PICKS"
+echo "done. Now run: vpn-rotate"
