@@ -26,7 +26,7 @@ rsync -az --no-perms \
 
 echo "== 2/4 remote: chmod + symlinks + unit + enable"
 ssh "$SERVER" "set -e
-  chmod +x $SRC/vpn-start $SRC/vpn-create $SRC/vpn-killswitch $SRC/opencode-vpn $SRC/vpn-rotate $SRC/vpn-add $SRC/vpn-fresh
+  chmod +x $SRC/vpn-start $SRC/vpn-create $SRC/vpn-killswitch $SRC/opencode-vpn $SRC/vpn-rotate $SRC/vpn-add $SRC/vpn-fresh $SRC/vpn-socks
   ln -sf $SRC/vpn-start      $BIN/vpn-start
   ln -sf $SRC/vpn-create     $BIN/vpn-create
   ln -sf $SRC/vpn-killswitch $BIN/vpn-killswitch
@@ -34,6 +34,7 @@ ssh "$SERVER" "set -e
   ln -sf $SRC/vpn-rotate     $BIN/vpn-rotate
   ln -sf $SRC/vpn-add        $BIN/vpn-add
   ln -sf $SRC/vpn-fresh      $BIN/vpn-fresh
+  ln -sf $SRC/vpn-socks      $BIN/vpn-socks
   [ -e $SRC/opencode-bypass ] && ln -sf $SRC/opencode-bypass $BIN/opencode-bypass || true
   cp $SRC/openvpn-netns.service /etc/systemd/system/openvpn-netns.service
   cp $SRC/vpn-proxy.service /etc/systemd/system/vpn-proxy.service
@@ -45,7 +46,7 @@ ssh "$SERVER" "set -e
 echo "== 3/4 remote: deployment state"
 ssh "$SERVER" '
   echo "--- /usr/local/bin symlinks:"
-  ls -l '"$BIN"'/vpn-start '"$BIN"'/vpn-create '"$BIN"'/vpn-killswitch '"$BIN"'/opencode-vpn '"$BIN"'/vpn-rotate '"$BIN"'/vpn-add '"$BIN"'/vpn-fresh
+  ls -l '"$BIN"'/vpn-start '"$BIN"'/vpn-create '"$BIN"'/vpn-killswitch '"$BIN"'/opencode-vpn '"$BIN"'/vpn-rotate '"$BIN"'/vpn-add '"$BIN"'/vpn-fresh '"$BIN"'/vpn-socks
   echo "--- unit identical to repo:"
   cmp -s /etc/systemd/system/openvpn-netns.service '"$SRC"'/openvpn-netns.service && echo OK
   echo "--- service:"

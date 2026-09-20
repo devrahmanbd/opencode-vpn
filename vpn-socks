@@ -1,0 +1,57 @@
+#!/bin/bash
+# vpn-socks - transparent SOCKS5 egress for the vpn namespace.
+#
+# opencode ignores proxy env vars, so a SOCKS proxy is only usable
+# transparently: redsocks + iptables REDIRECT sends ALL namespace TCP
+# (except the veth subnet and the proxy itself) through the given proxy.
+# Egress IP becomes the proxy's exit; opencode itself is untouched.
+#
+# Usage (as root):  vpn-socks <host> <port> <user> <pass>  |  vpn-socks off
+#   vpn-socks 104.219.238.233 33953 DVSif2hdb7 'pass'   # enable
+#   vpn-socks off                                       # back to tunnel egress
+#
+# Creds live ONLY in /etc/openvpn/client/redsocks.conf (0600) -- never in
+# the repo, never logged. Verification uses ifconfig.me only (no quota burn).
+# NOTE: a tunnel reconnect may flush nat rules -> hop drops back to tunnel
+# (safe direction); just re-run vpn-socks to re-enable.
+set -euo pipefail
+
+CONF=/etc/openvpn/client/redsocks.conf
+RPORT=12345
+
+if [ "${1:-}" = "off" ]; then
+    pkill -x redsocks 2>/dev/null || true
+    ip netns exec vpn iptables -t nat -F OUTPUT 2>/dev/null || true
+    echo "socks egress OFF; tunnel egress restored:"
+    ip netns exec vpn curl -s --max-time 12 https://ifconfig.me; echo
+    exit 0
+fi
+
+[ $# -eq 4 ] || { echo "usage: vpn-socks <host> <port> <user> <pass> | vpn-socks off" >&2; exit 2; }
+HOST="$1"; PPORT="$2"; USER="$3"; PASS="$4"
+
+command -v redsocks >/dev/null || { echo "installing redsocks..."; apt-get install -y -qq redsocks; }
+command -v ip >/dev/null || { echo "missing: ip" >&2; exit 1; }
+ip netns exec vpn true 2>/dev/null || { echo "no 'vpn' namespace (run vpn-create/vpn-start first)" >&2; exit 1; }
+
+printf '%s\n' \
+    'base { log_debug = off; log_info = on; log = "syslog:daemon"; daemon = on; redirector = iptables; }' \
+    'redsocks {' \
+    '  local_ip = 127.0.0.1; local_port = 12345;' \
+    "  ip = $HOST; port = $PPORT; type = socks5;" \
+    "  login = \"$USER\"; password = \"$PASS\";" \
+    '}' > "$CONF"
+chmod 600 "$CONF"
+
+pkill -x redsocks 2>/dev/null || true
+sleep 1
+ip netns exec vpn redsocks -c "$CONF" || { echo "redsocks failed to start" >&2; exit 1; }
+for spec in "-d 10.200.1.0/24" "-d $HOST"; do
+    # shellcheck disable=SC2086
+    ip netns exec vpn iptables -t nat -C OUTPUT -p tcp $spec -j RETURN 2>/dev/null \
+        || ip netns exec vpn iptables -t nat -A OUTPUT -p tcp $spec -j RETURN
+done
+ip netns exec vpn iptables -t nat -C OUTPUT -p tcp -j REDIRECT --to-ports "$RPORT" 2>/dev/null \
+    || ip netns exec vpn iptables -t nat -A OUTPUT -p tcp -j REDIRECT --to-ports "$RPORT"
+echo "socks egress ON via $HOST:$PPORT; namespace exit now:"
+ip netns exec vpn curl -s --max-time 15 https://ifconfig.me; echo
