@@ -11,6 +11,16 @@
 # vars to --up scripts). Defaults below keep standalone use working (vpn1).
 set -e
 
+# SAFETY: refuse to run on the host. These rules DROP all host INPUT/
+# OUTPUT except VPN leftovers -- running here kills SSH (port 22) and all
+# host networking. Only ever run inside the vpn namespace
+# (normally automatic via openvpn --up).
+if [ "$(ip netns identify $$ 2>/dev/null)" != "vpn" ]; then
+    echo "REFUSING: vpn-killswitch must run inside the 'vpn' netns." >&2
+    echo "Run via: ip netns exec vpn vpn-killswitch" >&2
+    exit 1
+fi
+
 KILLSWITCH_ENV=/etc/openvpn/client/killswitch.env
 [ -f "$KILLSWITCH_ENV" ] && . "$KILLSWITCH_ENV" || true
 VPN_SERVERS="${VPN_SERVERS:-94.156.149.196}"
