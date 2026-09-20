@@ -30,9 +30,9 @@ need curl
 need python3
 
 export COUNT COUNTRIES MAXLOAD
-PICKS="$(curl -s --max-time 20 \
-  "https://api.nordvpn.com/v1/servers?limit=100" | python3 -c "
-import json,sys,os
+PICKS="$(curl -s --max-time 25 \
+  "https://api.nordvpn.com/v1/servers?limit=300" | python3 -c "
+import json,sys,os,re
 want = set(os.environ.get('COUNTRIES','').upper().replace(' ','').split(',')) - {''}
 maxload = int(os.environ.get('MAXLOAD','30'))
 try:
@@ -47,10 +47,12 @@ for s in servers:
     if (s.get('load') or 100) > maxload: continue
     code = (((s.get('locations') or [{}])[0].get('country') or {}).get('code')) or ''
     if want and code.upper() not in want: continue
-    out.append((s['load'], s['hostname'], s['station'], code))
+    m = re.search(r'(\d+)$', s.get('hostname',''))
+    num = int(m.group(1)) if m else 0
+    out.append((s['load'], -num, num, s['hostname'], s['station'], code))
 out.sort()
-for _,h,ip,cc in out[:int(os.environ.get('COUNT','3'))]:
-    print('%s %s %s' % (h, ip, cc))
+for _,_,num,h,ip,cc in out[:int(os.environ.get('COUNT','3'))]:
+    print('%s %s %s %d' % (h, ip, cc, num))
 ")"
 [ -n "$PICKS" ] || { echo "no servers matched (try --max-load higher)" >&2; exit 1; }
 
@@ -67,7 +69,7 @@ done
 # existing server IPs + hostnames (skip duplicates)
 KNOWN="$(grep -h "^remote \|verify-x509-name" /root/vpn-netns/profiles/vpn*/*.ovpn 2>/dev/null || true)"
 
-while read -r host ip cc; do
+while read -r host ip cc _num; do
     [ -n "$host" ] || continue
     if echo "$KNOWN" | grep -q "$ip\|$host"; then
         echo "skip $host ($ip $cc): already installed"; continue
