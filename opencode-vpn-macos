@@ -1,78 +1,106 @@
 #!/bin/bash
-# Launch local OpenCode with its API traffic egressing via the Hetzner VPN.
-# macOS (Sequoia/Tahoe) has no network namespaces, so traffic goes through an
-# SSH-forwarded tinyproxy that lives INSIDE the server's vpn netns:
+# Launch local OpenCode with its traffic egressing via the Mac's OWN local
+# OpenVPN tunnel.
 #
-#   opencode -> 127.0.0.1:8888 -> ssh -L -> 10.200.1.2:8888 (tinyproxy in netns)
-#                                        -> tun0 -> NordVPN -> LLM APIs
+#   opencode -> utun (local OpenVPN) -> NordVPN -> LLM APIs
 #
-# Everything else on the Mac uses its normal network. Fail-closed: opencode
-# never starts unless the proxy exit IP matches the namespace exit IP.
+# Traffic routes through the tunnel transparently (full-tunnel with
+# redirect-gateway) — no proxy and no other machine involved.
 #
-# Prereqs: ssh key access to the server, a local `opencode` binary, curl.
-# Optional env overrides: VPN_SERVER, VPN_PROXY_REMOTE, VPN_PROXY_PORT.
+# Prereqs: local tunnel running (`sudo vpn-macos --vpnN`), local `opencode`
+# binary, curl.
 #
 # Wrapper flags (everything else passes through to opencode):
-#   --ip                                    print proxy/tunnel exit IPs, then exit
-#   -h                                      this help (opencode's own --help passes through)
+#   --vpnN             switch to local profile vpnN before launching (runs sudo vpn-macos)
+#   --stop             stop the local tunnel, then exit
+#   --ip               print local tunnel exit IP, then exit
+#   -h, --help         this help
 set -euo pipefail
 
-SERVER="${VPN_SERVER:-root@88.99.250.99}"
-REMOTE="${VPN_PROXY_REMOTE:-10.200.1.2:8888}"
-PORT="${VPN_PROXY_PORT:-8888}"
-PROXY="http://127.0.0.1:$PORT"
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/opencode-vpn"
+PID_FILE="$CONFIG_DIR/openvpn.pid"
+STATE_FILE="$CONFIG_DIR/current"
+# Find vpn-macos: same dir as this script, then ~/.local/bin, then PATH.
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+VPN_MACOS=""
+for candidate in "$SCRIPT_DIR/vpn-macos" "$HOME/.local/bin/vpn-macos"; do
+    if [ -x "$candidate" ]; then VPN_MACOS="$candidate"; break; fi
+done
+[ -n "$VPN_MACOS" ] || VPN_MACOS="$(command -v vpn-macos 2>/dev/null || true)"
 
 usage() {
-    echo "usage: opencode-vpn-macos [--ip] [-h] [opencode args...]"
+    cat <<'EOF'
+usage: opencode-vpn-macos [--vpnN] [--stop] [--ip] [-h] [opencode args...]
+
+  --vpnN    switch to local profile vpnN, then launch opencode
+  --stop    stop the local tunnel and exit
+  --ip      print local tunnel exit IP and exit
+  -h, --help  this help
+
+Without --vpnN the existing tunnel is used as-is (start one first:
+sudo vpn-macos --vpn2). Everything else is passed to opencode.
+EOF
 }
 
+tunnel_running() {
+    [ -f "$PID_FILE" ] || return 1
+    local pid
+    pid="$(cat "$PID_FILE" 2>/dev/null || true)"
+    [ -n "$pid" ] || return 1
+    kill -0 "$pid" 2>/dev/null
+}
+
+current_profile() {
+    [ -f "$STATE_FILE" ] && cat "$STATE_FILE" || echo "none"
+}
+
+exit_ip() { curl -s --max-time 8 https://ifconfig.me 2>/dev/null || true; }
+
+# --- parse args ---------------------------------------------------------------
 SHOW_IP=0
+DO_STOP=0
+SWITCH_PROFILE=""
 ARGS=()
 while [ $# -gt 0 ]; do
     case "$1" in
-        --ip) SHOW_IP=1; shift ;;
-        -h) usage; exit 0 ;;
-        --) shift; while [ $# -gt 0 ]; do ARGS+=("$1"); shift; done; break ;;
-        *) ARGS+=("$1"); shift ;;
+        --vpn[0-9]*) SWITCH_PROFILE="${1#--}"; shift ;;
+        --stop)      DO_STOP=1; shift ;;
+        --ip)        SHOW_IP=1; shift ;;
+        -h|--help)   usage; exit 0 ;;
+        --)          shift; while [ $# -gt 0 ]; do ARGS+=("$1"); shift; done; break ;;
+        *)           ARGS+=("$1"); shift ;;
     esac
 done
 
-proxy_ip() { curl -s --max-time 8 -x "$PROXY" https://ifconfig.me 2>/dev/null || true; }
+[ -n "$VPN_MACOS" ] || { echo "ERROR: vpn-macos not found; run setup-macos.sh first" >&2; exit 1; }
 
-BEFORE_FWD="$(pgrep -f "ssh.*-L 127.0.0.1:$PORT:" 2>/dev/null || true)"
-PROXY_IP="$(proxy_ip)"
-if [ -z "$PROXY_IP" ]; then
-    echo "starting ssh forward 127.0.0.1:$PORT -> $SERVER:$REMOTE ..." >&2
-    ssh -f -N -o BatchMode=yes -o ConnectTimeout=10 -o ExitOnForwardFailure=yes \
-        -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
-        -L "127.0.0.1:$PORT:$REMOTE" "$SERVER"
-    sleep 2
-    PROXY_IP="$(proxy_ip)"
+# --- --stop --------------------------------------------------------------------
+if [ "$DO_STOP" = 1 ]; then
+    exec sudo "$VPN_MACOS" --stop
 fi
-if [ -z "$PROXY_IP" ]; then
-    # Don't leave an orphaned forward behind on the failure path.
-    AFTER_FWD="$(pgrep -f "ssh.*-L 127.0.0.1:$PORT:" 2>/dev/null || true)"
-    for pid in $AFTER_FWD; do
-        case " $BEFORE_FWD " in
-            *" $pid "*) ;;
-            *) kill "$pid" 2>/dev/null || true ;;
-        esac
-    done
-    echo "ERROR: proxy unreachable; is vpn-proxy + openvpn-netns active on $SERVER?" >&2
+
+# --- --vpnN switch --------------------------------------------------------------
+if [ -n "$SWITCH_PROFILE" ]; then
+    sudo "$VPN_MACOS" "--$SWITCH_PROFILE" || exit 1
+fi
+
+# --- verify tunnel is up (fail-closed) -------------------------------------------
+if ! tunnel_running; then
+    echo "ERROR: no local VPN tunnel running." >&2
+    echo "start one first:  sudo vpn-macos --vpn2   (or use --vpnN here)" >&2
     exit 1
 fi
 
-NS_IP="$(ssh -o ConnectTimeout=10 "$SERVER" 'ip netns exec vpn curl -s --max-time 10 https://ifconfig.me' 2>/dev/null || true)"
-if [ "$PROXY_IP" != "$NS_IP" ]; then
-    echo "ERROR: proxy exit ($PROXY_IP) != namespace exit ($NS_IP); refusing to run" >&2
+VPN_IP="$(exit_ip)"
+if [ -z "$VPN_IP" ]; then
+    echo "ERROR: tunnel is up but cannot reach the internet (exit IP unknown)." >&2
     exit 1
 fi
-echo "vpn exit IP: $PROXY_IP" >&2
+echo "vpn exit IP: $VPN_IP  (profile: $(current_profile))" >&2
 
 if [ "$SHOW_IP" = 1 ]; then
-    echo "proxy exit:  $PROXY_IP"
-    echo "tunnel exit: $NS_IP"
-    echo "MATCH: Mac opencode traffic is on the VPN"
+    echo "local tunnel exit: $VPN_IP"
+    echo "profile: $(current_profile)"
     exit 0
 fi
 
@@ -80,8 +108,10 @@ OPENCODE="$(command -v opencode || true)"
 [ -n "$OPENCODE" ] || OPENCODE="$HOME/.opencode/bin/opencode"
 [ -x "$OPENCODE" ] || { echo "ERROR: opencode binary not found (install it first)" >&2; exit 1; }
 
-export HTTPS_PROXY="$PROXY" HTTP_PROXY="$PROXY" https_proxy="$PROXY" http_proxy="$PROXY"
+# Traffic routes through the tunnel transparently (full-tunnel redirect-gateway).
+# No proxy env vars needed — but harmless to set NO_PROXY for local addresses.
 export NO_PROXY="localhost,127.0.0.1,::1" no_proxy="localhost,127.0.0.1,::1"
+
 # "$@" on empty args trips `set -u` on bash 3.2, hence the branch.
 if [ "${#ARGS[@]}" -eq 0 ]; then
     exec "$OPENCODE"

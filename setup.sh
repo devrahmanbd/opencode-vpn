@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # setup.sh - dynamic dispatcher: picks the right installer for this machine.
-#   macOS  -> setup-macos.sh  (client: ssh forward + wrapper install)
+#   macOS  -> setup-macos.sh  (local openvpn tunnel + wrapper install)
 #   Ubuntu -> setup-ubuntu.sh (server: netns + openvpn + proxy + units)
 #
 # All flags are passed through. Start with: ./setup.sh --help

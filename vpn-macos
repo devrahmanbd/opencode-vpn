@@ -1,0 +1,239 @@
+#!/bin/bash
+# vpn-macos — local OpenVPN profile manager for macOS.
+# Runs entirely on this Mac; each device chooses its own profile freely.
+#
+# Usage:
+#   sudo vpn-macos --vpn2        switch to profile vpn2 (tcp preferred, udp fallback)
+#   sudo vpn-macos --vpn2 --udp  force udp for profile 2
+#   sudo vpn-macos --stop        stop the local tunnel
+#   vpn-macos --status           show current status + exit IP (no sudo)
+#   vpn-macos --list             list available profiles (no sudo)
+#
+# Profiles are installed to ~/.config/opencode-vpn/profiles/vpnN/{tcp,udp}.ovpn
+# Credentials at ~/.config/opencode-vpn/auth.txt (chmod 600).
+# State at ~/.config/opencode-vpn/current ("vpnN tcp").
+set -euo pipefail
+
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/opencode-vpn"
+PROFILES_DIR="$CONFIG_DIR/profiles"
+AUTH_FILE="$CONFIG_DIR/auth.txt"
+PID_FILE="$CONFIG_DIR/openvpn.pid"
+LOG_FILE="$CONFIG_DIR/openvpn.log"
+STATE_FILE="$CONFIG_DIR/current"
+CONNECT_TIMEOUT=30
+
+die() { echo "[!!] $*" >&2; exit 1; }
+log() { echo "[..] $*"; }
+ok()  { echo "[ok] $*"; }
+
+find_openvpn() {
+    if command -v openvpn >/dev/null 2>&1; then
+        command -v openvpn
+    elif [ -x /opt/homebrew/bin/openvpn ]; then
+        echo /opt/homebrew/bin/openvpn
+    elif [ -x /usr/local/bin/openvpn ]; then
+        echo /usr/local/bin/openvpn
+    else
+        return 1
+    fi
+}
+
+is_running() {
+    [ -f "$PID_FILE" ] || return 1
+    local pid
+    pid="$(cat "$PID_FILE" 2>/dev/null || true)"
+    [ -n "$pid" ] || return 1
+    kill -0 "$pid" 2>/dev/null
+}
+
+current_profile() {
+    if [ -f "$STATE_FILE" ]; then
+        cat "$STATE_FILE"
+    else
+        echo "none"
+    fi
+}
+
+stop_tunnel() {
+    if is_running; then
+        local pid
+        pid="$(cat "$PID_FILE")"
+        log "stopping openvpn (pid $pid) ..."
+        kill "$pid" 2>/dev/null || true
+        local i
+        for i in $(seq 1 10); do
+            kill -0 "$pid" 2>/dev/null || break
+            sleep 0.5
+        done
+        kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null || true
+        ok "stopped"
+    else
+        log "no tunnel running"
+    fi
+    rm -f "$PID_FILE" "$STATE_FILE"
+}
+
+wait_for_tunnel() {
+    local timeout="$1" i
+    for i in $(seq 1 "$timeout"); do
+        if grep -q "Initialization Sequence Completed" "$LOG_FILE" 2>/dev/null; then
+            return 0
+        fi
+        # fail fast on auth errors
+        if grep -q "AUTH_FAILED" "$LOG_FILE" 2>/dev/null; then
+            die "auth failed; check $AUTH_FILE (username/password)"
+        fi
+        if grep -q "Cannot resolve" "$LOG_FILE" 2>/dev/null; then
+            die "cannot resolve VPN server hostname; check network"
+        fi
+        sleep 1
+    done
+    return 1
+}
+
+exit_ip() {
+    curl -s --max-time 8 https://ifconfig.me 2>/dev/null || true
+}
+
+# --- parse args (no root needed for --status / --list / -h) ------------------
+PROFILE=""
+PROTO=""
+ACTION=""
+
+usage() {
+    cat <<'EOF'
+usage: vpn-macos [--vpnN] [--tcp|--udp] [--stop] [--status] [--list] [-h]
+
+  --vpnN         start/switch to profile vpnN (requires sudo)
+  --tcp|--udp    force protocol (default: tcp, fallback to udp)
+  --stop         stop the local tunnel (requires sudo)
+  --status       show current tunnel status + exit IP
+  --list         list available profiles
+  -h             this help
+EOF
+    exit 2
+}
+
+for arg in "$@"; do
+    case "$arg" in
+        --vpn[0-9]*) PROFILE="${arg#--}" ;;
+        --tcp|--udp) PROTO="${arg#--}" ;;
+        --stop)      ACTION="stop" ;;
+        --status)    ACTION="status" ;;
+        --list)      ACTION="list" ;;
+        -h|--help)   usage ;;
+        *)           die "unknown flag: $arg (see -h)" ;;
+    esac
+done
+
+# --- actions that don't need root --------------------------------------------
+if [ "$ACTION" = "list" ]; then
+    if [ -d "$PROFILES_DIR" ]; then
+        for d in "$PROFILES_DIR"/vpn*; do
+            [ -d "$d" ] || continue
+            echo "${d##*/}"
+        done
+    else
+        die "no profiles dir at $PROFILES_DIR (run setup-macos.sh first)"
+    fi
+    exit 0
+fi
+
+if [ "$ACTION" = "status" ]; then
+    if is_running; then
+        local_pid="$(cat "$PID_FILE")"
+        ok "tunnel running (pid $local_pid), profile: $(current_profile)"
+        ip="$(exit_ip)"
+        if [ -n "$ip" ]; then
+            echo "exit IP: $ip"
+        else
+            echo "exit IP: unreachable"
+        fi
+    else
+        log "no tunnel running"
+        log "current profile state: $(current_profile)"
+    fi
+    exit 0
+fi
+
+# --- actions that need root: re-exec with sudo --------------------------------
+if [ "$(id -u)" -ne 0 ]; then
+    # stop/status/list already handled above; remaining actions need root
+    if [ -z "$PROFILE" ] && [ "$ACTION" != "stop" ]; then
+        die "nothing to do; try --vpnN, --stop, --status, or --list"
+    fi
+    exec sudo "$0" "$@"
+fi
+
+# From here on we are root.
+
+if [ "$ACTION" = "stop" ]; then
+    stop_tunnel
+    exit 0
+fi
+
+if [ -z "$PROFILE" ]; then
+    die "no profile given; try --vpn2, --stop, --status, or --list"
+fi
+
+# --- validate profile ---------------------------------------------------------
+PROFILE_DIR="$PROFILES_DIR/$PROFILE"
+[ -d "$PROFILE_DIR" ] || die "profile not found: $PROFILE_DIR (available: $(ls "$PROFILES_DIR" 2>/dev/null | tr '\n' ' '))"
+
+# --- resolve proto ------------------------------------------------------------
+if [ -z "$PROTO" ]; then
+    if [ -f "$STATE_FILE" ]; then
+        read -r _ SAVED_PROTO < "$STATE_FILE" || true
+        [ -n "${SAVED_PROTO:-}" ] && PROTO="$SAVED_PROTO"
+    fi
+    [ -z "$PROTO" ] && PROTO="tcp"
+fi
+
+CONFIG="$PROFILE_DIR/$PROTO.ovpn"
+if [ ! -f "$CONFIG" ]; then
+    # fallback to the other proto
+    if [ "$PROTO" = "tcp" ]; then
+        CONFIG="$PROFILE_DIR/udp.ovpn"
+        PROTO="udp"
+    else
+        CONFIG="$PROFILE_DIR/tcp.ovpn"
+        PROTO="tcp"
+    fi
+fi
+[ -f "$CONFIG" ] || die "no config found in $PROFILE_DIR"
+
+# --- prerequisites -------------------------------------------------------------
+OPENVPN="$(find_openvpn)" || die "openvpn not found; install it: brew install openvpn"
+[ -f "$AUTH_FILE" ] || die "credentials missing: $AUTH_FILE (create it: line1=username, line2=password)"
+
+# --- stop existing tunnel ------------------------------------------------------
+stop_tunnel
+
+# --- start new tunnel -----------------------------------------------------------
+log "starting $PROFILE ($PROTO) ..."
+: > "$LOG_FILE"
+"$OPENVPN" \
+    --config "$CONFIG" \
+    --auth-user-pass "$AUTH_FILE" \
+    --daemon openvpn-vpn-macos \
+    --writepid "$PID_FILE" \
+    --log "$LOG_FILE" \
+    --script-security 2 \
+    --persist-tun \
+    --persist-key \
+    --route-delay 2 \
+    --dns 103.86.96.100 \
+    --dns 103.86.96.101 \
+    2>>"$LOG_FILE" || die "openvpn failed to launch; see $LOG_FILE"
+
+if wait_for_tunnel "$CONNECT_TIMEOUT"; then
+    echo "$PROFILE $PROTO" > "$STATE_FILE"
+    ip="$(exit_ip)"
+    ok "tunnel up: $PROFILE ($PROTO)"
+    echo "exit IP: ${ip:-unknown}"
+else
+    stop_tunnel
+    echo "---- last 15 lines of log ----" >&2
+    tail -15 "$LOG_FILE" >&2 2>/dev/null || true
+    die "tunnel did not come up in ${CONNECT_TIMEOUT}s; see $LOG_FILE"
+fi

@@ -56,9 +56,11 @@ One entry point, detects the OS and runs the right installer:
   to the real NIC, writes resolv.conf, prompts for VPN creds (`auth.txt`,
   0600), enables both units, waits for the tunnel, verifies exit IPs +
   killswitch + proxy. `-y` needs `VPN_AUTH_USER`/`VPN_AUTH_PASS` in env.
-- **macOS 13+**: checks ssh key auth + local opencode, installs
-  `opencode-vpn-macos` to `~/.local/bin`, probes server services, runs an
-  end-to-end proxy test (proxy exit IP == namespace exit IP, fail-closed).
+- **macOS 13+**: checks local opencode + curl, installs openvpn (via
+  Homebrew), copies the VPN profiles + NordVPN credentials to
+  `~/.config/opencode-vpn/`, installs `vpn-macos` and `opencode-vpn-macos`
+  to `~/.local/bin`, and optionally starts a test tunnel. No server is
+  contacted at any point.
 
 ## Deploy (one-time, from the repo checkout)
 
@@ -98,20 +100,26 @@ opencode-vpn                  # launch OpenCode inside the VPN (on the server)
 
 ### macOS client (this Mac)
 
+The Mac runs its **own** local OpenVPN tunnel. Each device picks its own
+profile freely; the two machines never touch each other.
+
 ```bash
-opencode-vpn-macos              # local opencode, API traffic via the VPN (fail-closed)
-opencode-vpn-macos --ip         # just print proxy/tunnel exit IPs, no launch
-opencode-vpn-macos --list       # list server profiles (vpn1 US, vpn2 UK, vpn3 BD)
-opencode-vpn-macos --vpn2       # switch server to UK, wait for tunnel, then launch
+sudo vpn-macos --vpn2           # start / switch the local tunnel
+vpn-macos --status              # tunnel status + local exit IP
+vpn-macos --list                # list local profiles (vpn1 US, vpn2 UK, vpn3 BD, ...)
+vpn-macos --stop                # stop the local tunnel
+
+opencode-vpn-macos              # launch opencode through the tunnel (fail-closed)
+opencode-vpn-macos --vpn3       # switch local profile first, then launch
+opencode-vpn-macos --ip         # just print the local exit IP, no launch
 ```
 
-Only opencode's traffic goes through the SSH-forwarded proxy
-(`127.0.0.1:8888` → `10.200.1.2:8888` in the server netns → tunnel);
-everything else on the Mac uses its normal network. The wrapper refuses to
-run unless the proxy exit IP matches the namespace exit IP.
-
-The proto that actually connects is saved to `/etc/openvpn/client/current`
-(`vpnN tcp|udp`) and re-read by the systemd service on boot/restart.
+All of the Mac's traffic goes through the tunnel (full-tunnel with
+`redirect-gateway`), with DNS set to `103.86.96.100`/`101` so name lookups
+keep working inside it. The wrapper refuses to launch opencode unless a
+tunnel is actually up and its exit IP is reachable. State lives in
+`~/.config/opencode-vpn/` (`current` = `vpnN proto`, `openvpn.pid`,
+`openvpn.log`).
 
 ### Foreground vs daemon
 
