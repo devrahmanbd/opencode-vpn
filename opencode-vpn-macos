@@ -47,7 +47,8 @@ tunnel_running() {
     local pid
     pid="$(cat "$PID_FILE" 2>/dev/null || true)"
     [ -n "$pid" ] || return 1
-    kill -0 "$pid" 2>/dev/null
+    # ps (not kill -0): the daemon runs as root, any user must see it
+    ps -p "$pid" >/dev/null 2>&1
 }
 
 current_profile() {
@@ -96,10 +97,21 @@ if [ -z "$VPN_IP" ]; then
     echo "ERROR: tunnel is up but cannot reach the internet (exit IP unknown)." >&2
     exit 1
 fi
-echo "vpn exit IP: $VPN_IP  (profile: $(current_profile))" >&2
+# state format: "vpnN proto mode" — in split mode the reachable IP is direct
+TUN_MODE="$(awk '{print $3}' "$STATE_FILE" 2>/dev/null || true)"
+if [ "$TUN_MODE" = "split" ]; then
+    echo "split mode: API hosts via tunnel; direct IP: $VPN_IP  (profile: $(current_profile))" >&2
+else
+    echo "vpn exit IP: $VPN_IP  (profile: $(current_profile))" >&2
+fi
 
 if [ "$SHOW_IP" = 1 ]; then
-    echo "local tunnel exit: $VPN_IP"
+    if [ "$TUN_MODE" = "split" ]; then
+        echo "split mode: API hosts via tunnel"
+        echo "direct IP: $VPN_IP"
+    else
+        echo "local tunnel exit: $VPN_IP"
+    fi
     echo "profile: $(current_profile)"
     exit 0
 fi

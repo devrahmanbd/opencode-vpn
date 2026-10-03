@@ -94,8 +94,12 @@ echo "[..] step 3/7: openvpn"
 find_openvpn() {
     if command -v openvpn >/dev/null 2>&1; then
         command -v openvpn
+    elif [ -x /opt/homebrew/sbin/openvpn ]; then
+        echo /opt/homebrew/sbin/openvpn
     elif [ -x /opt/homebrew/bin/openvpn ]; then
         echo /opt/homebrew/bin/openvpn
+    elif [ -x /usr/local/sbin/openvpn ]; then
+        echo /usr/local/sbin/openvpn
     elif [ -x /usr/local/bin/openvpn ]; then
         echo /usr/local/bin/openvpn
     else

@@ -104,22 +104,35 @@ The Mac runs its **own** local OpenVPN tunnel. Each device picks its own
 profile freely; the two machines never touch each other.
 
 ```bash
-sudo vpn-macos --vpn2           # start / switch the local tunnel
+sudo vpn-macos --vpn2           # start / switch the local tunnel (full-tunnel default)
+sudo vpn-macos --vpn2 --split   # split-tunnel: only API hosts via VPN, rest direct
 vpn-macos --status              # tunnel status + local exit IP
 vpn-macos --list                # list local profiles (vpn1 US, vpn2 UK, vpn3 BD, ...)
 vpn-macos --stop                # stop the local tunnel
 
 opencode-vpn-macos              # launch opencode through the tunnel (fail-closed)
 opencode-vpn-macos --vpn3       # switch local profile first, then launch
-opencode-vpn-macos --ip         # just print the local exit IP, no launch
+opencode-vpn-macos --ip         # just print the IP + profile, no launch
+
+# which IP is which:
+vpn-macos --status              # direct (system) exit IP; in full mode this IS the VPN IP
+curl -s ifconfig.me             # direct (system) exit IP
+curl -s https://opencode.ai/cdn-cgi/trace | grep ^ip=
+                                # VPN exit IP in split mode (request rides the tunnel routes)
 ```
 
-All of the Mac's traffic goes through the tunnel (full-tunnel with
-`redirect-gateway`), with DNS set to `103.86.96.100`/`101` so name lookups
-keep working inside it. The wrapper refuses to launch opencode unless a
-tunnel is actually up and its exit IP is reachable. State lives in
-`~/.config/opencode-vpn/` (`current` = `vpnN proto`, `openvpn.pid`,
-`openvpn.log`).
+Full tunnel (default): all of the Mac's traffic goes through the VPN
+(`redirect-gateway` from the server), DNS pinned to `103.86.96.100`/`101`.
+Split tunnel (`--split`): server-pushed routes are ignored
+(`--route-nopull`); only `SPLIT_HOSTS` (default `opencode.ai`
+`api.opencode.ai`, override via env) is routed via the tunnel, everything
+else uses the normal network and normal DNS. A pf anchor
+(`com.opencode-vpn/split`) pins those API IPs to the utun interface so a
+tunnel drop fails closed instead of leaking onto the direct route; the mode
+persists in state, `--full` switches back. The wrapper refuses to launch
+opencode unless a tunnel is actually up and reachable. State lives in
+`~/.config/opencode-vpn/` (`current` = `vpnN proto mode`, `openvpn.pid`,
+`openvpn.log`, `pf.split.conf`).
 
 ### Foreground vs daemon
 

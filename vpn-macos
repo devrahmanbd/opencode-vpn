@@ -3,15 +3,26 @@
 # Runs entirely on this Mac; each device chooses its own profile freely.
 #
 # Usage:
-#   sudo vpn-macos --vpn2        switch to profile vpn2 (tcp preferred, udp fallback)
-#   sudo vpn-macos --vpn2 --udp  force udp for profile 2
-#   sudo vpn-macos --stop        stop the local tunnel
-#   vpn-macos --status           show current status + exit IP (no sudo)
-#   vpn-macos --list             list available profiles (no sudo)
+#   sudo vpn-macos --vpn2             switch to profile vpn2 (tcp preferred, udp fallback)
+#   sudo vpn-macos --vpn2 --udp       force udp for profile 2
+#   sudo vpn-macos --vpn2 --split     split-tunnel: only SPLIT_HOSTS via VPN
+#   sudo vpn-macos --vpn2 --full      full tunnel (default)
+#   sudo vpn-macos --stop             stop the local tunnel
+#   vpn-macos --status                show current status + exit IP (no sudo)
+#   vpn-macos --list                  list available profiles (no sudo)
+#
+# Full tunnel: all Mac traffic egresses via the VPN (redirect-gateway from
+# the server), DNS pinned to NordVPN resolvers.
+# Split tunnel (--split): server-pushed routes ignored (--route-nopull);
+# only SPLIT_HOSTS (default: opencode.ai api.opencode.ai, override via env,
+# e.g. SPLIT_HOSTS="a.example b.example" sudo -E vpn-macos --vpn2 --split)
+# are routed via the tunnel; everything else uses the normal network.
+# A pf anchor pins those API IPs to the utun interface so a tunnel drop
+# fails closed instead of leaking onto the direct route.
 #
 # Profiles are installed to ~/.config/opencode-vpn/profiles/vpnN/{tcp,udp}.ovpn
 # Credentials at ~/.config/opencode-vpn/auth.txt (chmod 600).
-# State at ~/.config/opencode-vpn/current ("vpnN tcp").
+# State at ~/.config/opencode-vpn/current ("vpnN proto mode").
 set -euo pipefail
 
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/opencode-vpn"
@@ -20,17 +31,26 @@ AUTH_FILE="$CONFIG_DIR/auth.txt"
 PID_FILE="$CONFIG_DIR/openvpn.pid"
 LOG_FILE="$CONFIG_DIR/openvpn.log"
 STATE_FILE="$CONFIG_DIR/current"
+PF_CONF="$CONFIG_DIR/pf.split.conf"
+PF_ANCHOR="com.opencode-vpn/split"
 CONNECT_TIMEOUT=30
+# Hosts that must egress via the tunnel in --split mode (space-separated).
+SPLIT_HOSTS="${SPLIT_HOSTS:-opencode.ai api.opencode.ai}"
 
 die() { echo "[!!] $*" >&2; exit 1; }
 log() { echo "[..] $*"; }
 ok()  { echo "[ok] $*"; }
+warn() { echo "[!!] $*" >&2; }
 
 find_openvpn() {
     if command -v openvpn >/dev/null 2>&1; then
         command -v openvpn
+    elif [ -x /opt/homebrew/sbin/openvpn ]; then
+        echo /opt/homebrew/sbin/openvpn
     elif [ -x /opt/homebrew/bin/openvpn ]; then
         echo /opt/homebrew/bin/openvpn
+    elif [ -x /usr/local/sbin/openvpn ]; then
+        echo /usr/local/sbin/openvpn
     elif [ -x /usr/local/bin/openvpn ]; then
         echo /usr/local/bin/openvpn
     else
@@ -43,7 +63,8 @@ is_running() {
     local pid
     pid="$(cat "$PID_FILE" 2>/dev/null || true)"
     [ -n "$pid" ] || return 1
-    kill -0 "$pid" 2>/dev/null
+    # ps (not kill -0): the daemon runs as root, any user must see it
+    ps -p "$pid" >/dev/null 2>&1
 }
 
 current_profile() {
@@ -54,7 +75,12 @@ current_profile() {
     fi
 }
 
+pf_flush() {
+    pfctl -a "$PF_ANCHOR" -F all >/dev/null 2>&1 || true
+}
+
 stop_tunnel() {
+    pf_flush
     if is_running; then
         local pid
         pid="$(cat "$PID_FILE")"
@@ -70,7 +96,7 @@ stop_tunnel() {
     else
         log "no tunnel running"
     fi
-    rm -f "$PID_FILE" "$STATE_FILE"
+    rm -f "$PID_FILE" "$STATE_FILE" "$PF_CONF"
 }
 
 wait_for_tunnel() {
@@ -95,17 +121,43 @@ exit_ip() {
     curl -s --max-time 8 https://ifconfig.me 2>/dev/null || true
 }
 
+# resolve_host <name> -> IPv4 addresses, one per line (dig, fallback python3)
+resolve_host() {
+    dig +short A "$1" 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' || \
+    python3 -c 'import socket,sys; print(socket.gethostbyname(sys.argv[1]))' "$1" 2>/dev/null || true
+}
+
+# pf_pin <utun> <ip>... — block API IPs everywhere except the tunnel iface
+pf_pin() {
+    local utun="$1"; shift
+    [ $# -gt 0 ] || return 1
+    {
+        echo "table <split_api> { $* }"
+        echo "block out quick on ! $utun to <split_api>"
+    } > "$PF_CONF"
+    if ! pfctl -s info 2>/dev/null | grep -q "Status: Enabled"; then
+        log "enabling pf for the split fail-closed pin ..."
+        pfctl -e >/dev/null 2>&1 || { warn "pfctl -e failed; split runs WITHOUT fail-closed pin"; return 1; }
+    fi
+    pfctl -a "$PF_ANCHOR" -f "$PF_CONF" 2>/dev/null || { warn "pf anchor load failed; split runs WITHOUT fail-closed pin"; return 1; }
+    ok "fail-closed pin active (API IPs blocked off-tunnel)"
+}
+
 # --- parse args (no root needed for --status / --list / -h) ------------------
 PROFILE=""
 PROTO=""
+MODE=""
 ACTION=""
 
 usage() {
     cat <<'EOF'
-usage: vpn-macos [--vpnN] [--tcp|--udp] [--stop] [--status] [--list] [-h]
+usage: vpn-macos [--vpnN] [--tcp|--udp] [--split|--full] [--stop] [--status] [--list] [-h]
 
   --vpnN         start/switch to profile vpnN (requires sudo)
   --tcp|--udp    force protocol (default: tcp, fallback to udp)
+  --split        split-tunnel: only SPLIT_HOSTS via VPN (default hosts:
+                 opencode.ai api.opencode.ai; override with env SPLIT_HOSTS)
+  --full         full tunnel: all traffic via VPN (default)
   --stop         stop the local tunnel (requires sudo)
   --status       show current tunnel status + exit IP
   --list         list available profiles
@@ -118,6 +170,8 @@ for arg in "$@"; do
     case "$arg" in
         --vpn[0-9]*) PROFILE="${arg#--}" ;;
         --tcp|--udp) PROTO="${arg#--}" ;;
+        --split)     MODE="split" ;;
+        --full)      MODE="full" ;;
         --stop)      ACTION="stop" ;;
         --status)    ACTION="status" ;;
         --list)      ACTION="list" ;;
@@ -202,6 +256,19 @@ if [ ! -f "$CONFIG" ]; then
 fi
 [ -f "$CONFIG" ] || die "no config found in $PROFILE_DIR"
 
+# --- resolve mode (reuse saved mode when no flag given) ------------------------
+if [ -z "$MODE" ]; then
+    if [ -f "$STATE_FILE" ]; then
+        read -r _ _ SAVED_MODE < "$STATE_FILE" || true
+        [ -n "${SAVED_MODE:-}" ] && MODE="$SAVED_MODE"
+    fi
+    [ -z "$MODE" ] && MODE="full"
+fi
+case "$MODE" in
+    split|full) ;;
+    *) MODE="full" ;;
+esac
+
 # --- prerequisites -------------------------------------------------------------
 OPENVPN="$(find_openvpn)" || die "openvpn not found; install it: brew install openvpn"
 [ -f "$AUTH_FILE" ] || die "credentials missing: $AUTH_FILE (create it: line1=username, line2=password)"
@@ -209,8 +276,31 @@ OPENVPN="$(find_openvpn)" || die "openvpn not found; install it: brew install op
 # --- stop existing tunnel ------------------------------------------------------
 stop_tunnel
 
+# --- build tunnel args ----------------------------------------------------------
+DNS_ARGS=(--dns server 1 address 103.86.96.100 103.86.96.101)
+ROUTE_ARGS=()
+SPLIT_IPS=""
+if [ "$MODE" = "split" ]; then
+    DNS_ARGS=()
+    ROUTE_ARGS+=(--route-nopull)
+    for h in $SPLIT_HOSTS; do
+        ips="$(resolve_host "$h")"
+        if [ -z "$ips" ]; then
+            log "split: cannot resolve $h; skipping"
+            continue
+        fi
+        for ip in $ips; do
+            ROUTE_ARGS+=(--route "$ip" 255.255.255.255 vpn_gateway)
+            SPLIT_IPS="$SPLIT_IPS $ip"
+            log "split: $h -> $ip via tunnel"
+        done
+    done
+    SPLIT_IPS="$(echo $SPLIT_IPS)"
+    [ -n "$SPLIT_IPS" ] || die "split: none of [$SPLIT_HOSTS] resolved; aborting"
+fi
+
 # --- start new tunnel -----------------------------------------------------------
-log "starting $PROFILE ($PROTO) ..."
+log "starting $PROFILE ($PROTO, $MODE) ..."
 : > "$LOG_FILE"
 "$OPENVPN" \
     --config "$CONFIG" \
@@ -220,17 +310,38 @@ log "starting $PROFILE ($PROTO) ..."
     --log "$LOG_FILE" \
     --script-security 2 \
     --persist-tun \
-    --persist-key \
     --route-delay 2 \
-    --dns 103.86.96.100 \
-    --dns 103.86.96.101 \
+    ${DNS_ARGS[@]+"${DNS_ARGS[@]}"} \
+    ${ROUTE_ARGS[@]+"${ROUTE_ARGS[@]}"} \
     2>>"$LOG_FILE" || die "openvpn failed to launch; see $LOG_FILE"
 
 if wait_for_tunnel "$CONNECT_TIMEOUT"; then
-    echo "$PROFILE $PROTO" > "$STATE_FILE"
-    ip="$(exit_ip)"
-    ok "tunnel up: $PROFILE ($PROTO)"
-    echo "exit IP: ${ip:-unknown}"
+    echo "$PROFILE $PROTO $MODE" > "$STATE_FILE"
+    if [ "$MODE" = "split" ]; then
+        # log format here is "Opened utun device utun4" (no /dev/ prefix);
+        # the || true keeps set -e+pipefail from killing us silently
+        FIRST_IP="$(echo $SPLIT_IPS | awk '{print $1}')"
+        # most truthful source for the tunnel iface: the interface
+        # actually carrying an API route (no log-format dependency)
+        UTUN="$(route -n get "$FIRST_IP" 2>/dev/null | awk '/interface:/{print $2}' || true)"
+        if [ -n "$UTUN" ]; then
+            # intentional word splitting of the collected IP list
+            # shellcheck disable=SC2086
+            pf_pin "$UTUN" $SPLIT_IPS || true
+        else
+            warn "could not detect tunnel interface; split runs WITHOUT fail-closed pin"
+        fi
+        VIA="$(route -n get "$FIRST_IP" 2>/dev/null | awk '/interface:/{print $2}' || true)"
+        log "route check: $FIRST_IP via ${VIA:-unknown}"
+        [ "${VIA:-}" = "${UTUN:-}" ] || warn "route check unexpected: $FIRST_IP via ${VIA:-unknown} (tunnel: ${UTUN:-unknown})"
+        ip="$(exit_ip)"
+        ok "split tunnel up: $PROFILE ($PROTO) — API hosts via ${UTUN:-utun?}, rest direct"
+        echo "direct IP (rest of system): ${ip:-unknown}"
+    else
+        ip="$(exit_ip)"
+        ok "tunnel up: $PROFILE ($PROTO, full)"
+        echo "exit IP: ${ip:-unknown}"
+    fi
 else
     stop_tunnel
     echo "---- last 15 lines of log ----" >&2
